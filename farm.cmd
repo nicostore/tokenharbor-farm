@@ -21,8 +21,7 @@ if not exist node_modules (
     pause
     exit /b 1
   )
-  echo [SETUP] Playwright browser... (sekali, agak lama)
-  call npx playwright install chromium
+  echo [SETUP] Selesai. (bot pakai Microsoft Edge - TANPA download Chromium)
 )
 
 echo.

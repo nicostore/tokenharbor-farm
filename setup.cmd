@@ -1,7 +1,9 @@
 @echo off
 rem ============================================================
 rem  tokenharbor-farm - setup sekali pakai (Windows RDP)
-rem  jalankan SEKALI setelah clone repo.
+rem  PAKAI Microsoft Edge bawaan (channel msedge) — TANPA
+rem  download Chromium 140MB yang lama. Optional: kalau Edge
+rem  tidak ada, baru download Chromium.
 rem ============================================================
 cd /d "%~dp0"
 
@@ -22,11 +24,17 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [3/3] Install Chromium untuk Playwright...
-call npx playwright install chromium
+echo [3/3] Cek Microsoft Edge (browser utama bot)...
+if exist "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" (
+  echo  Edge ditemukan - tidak perlu download Chromium. Selesai!
+) else (
+  echo  Edge TIDAK ditemukan. Download Chromium dulu (sekali, 140MB, lama)...
+  call npx playwright install chromium
+)
 
 echo.
 echo ============================================================
 echo  Setup selesai! Jalanin bot:  double-click farm.cmd
+echo  (pakai Microsoft Edge - skip Chromium 140MB yang lama)
 echo ============================================================
 pause

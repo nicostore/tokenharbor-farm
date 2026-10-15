@@ -133,23 +133,33 @@ async function main() {
       OUT.emit("attempt", { worker: wid, proxy: proxy || "(direct)" });
       OUT.log(`── account via ${proxy || "(direct)"} ──`);
 
-      // FRESH Chromium per account (anti-flag) — launch, provision, close.
+      // FRESH browser per account (anti-flag) — launch, provision, close.
+      // Windows: pakai Microsoft Edge bawaan (channel msedge) — TANPA download
+      // Chromium, jadi setup instan. Fallback ke chromium terinstall.
       let browser = null;
       try {
         const { chromium } = await import("playwright");
-        browser = await chromium.launch({
-          headless: true,
-          args: [
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--enable-unsafe-swiftshader",
-            "--use-gl=angle",
-            "--use-angle=swiftshader",
-            "--ignore-gpu-blocklist",
-            "--enable-webgl",
-            "--disable-blink-features=AutomationControlled",
-          ],
-        });
+
+        const LAUNCH_ARGS = [
+          "--no-sandbox",
+          "--disable-dev-shm-usage",
+          "--enable-unsafe-swiftshader",
+          "--use-gl=angle",
+          "--use-angle=swiftshader",
+          "--ignore-gpu-blocklist",
+          "--enable-webgl",
+          "--disable-blink-features=AutomationControlled",
+        ];
+
+        try {
+          browser = await chromium.launch({ channel: "msedge", headless: true, args: LAUNCH_ARGS });
+        } catch {
+          try {
+            browser = await chromium.launch({ channel: "chrome", headless: true, args: LAUNCH_ARGS });
+          } catch {
+            browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS });
+          }
+        }
 
         const r = await provisionOne(browser, {
           inboxProvider: cfg.worker.inboxProvider,
