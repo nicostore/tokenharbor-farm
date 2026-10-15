@@ -1,0 +1,22 @@
+{
+  "name": "tokenharbor-farm",
+  "version": "1.0.0",
+  "description": "TokenHarbor farm CLI — rotate-IP mode, interactive menu + live dashboard. Run on Windows (RDP) or Linux.",
+  "type": "module",
+  "main": "src/tui.mjs",
+  "bin": {
+    "thfarm": "src/tui.mjs"
+  },
+  "scripts": {
+    "start": "node src/tui.mjs",
+    "farm": "node src/core/farm.mjs",
+    "setup": "node scripts/setup.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "playwright": "1.47.2"
+  },
+  "license": "MIT"
+}

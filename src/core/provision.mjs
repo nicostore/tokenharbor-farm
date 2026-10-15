@@ -1,0 +1,207 @@
+/**
+ * Core provisioning flow: one Token Harbor account + one API key, end to end.
+ *
+ * HYBRID IP STRATEGY (proven to 50 keys):
+ *   - SIGNUP goes through the account's proxy (many fresh egress IPs, so the
+ *     signup anti-abuse gate never sees one hot IP).
+ *   - VERIFY EMAIL + API-KEY CREATION run from the machine's OWN IP (no proxy)
+ *     once a fresh context is created with the signup session's cookies
+ *     (storageState). The Vercel Security Checkpoint on /verify-email and the
+ *     key-mint dashboard both behave on a clean IP, and this keeps every
+ *     account's sensitive finish off the burnable proxy.
+ *
+ * Each account gets a BRAND-NEW pair of contexts (platform + inbox) so no
+ * cookies/cache carry over between accounts, and the caller can pick a fresh
+ * proxy per attempt via opts.pickProxy.
+ *
+ * @module core/provision
+ */
+
+import * as tokenharbor from "../tokenharbor/client.mjs";
+import { createInbox } from "../inbox/index.mjs";
+import { randomKeyName, randomPassword } from "../utils/random.mjs";
+import { log } from "../utils/logger.mjs";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Desktop Chrome UA — Vercel Security Checkpoint blocks the HeadlessChrome UA
+// on /verify-email with an endless "We're verifying your browser" wall.
+export const DESKTOP_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+/** Classify an error so the caller knows whether a retry can help. */
+export function classify(err) {
+  const m = (err?.message ? err.message : String(err)).toLowerCase();
+  if (m.includes("turnstile")) return "turnstile";
+  if (m.includes("already registered") || m.includes("already exists") || m.includes("in use"))
+    return "email-taken";
+  if (m.includes("timed out waiting for the token harbor verification"))
+    return "mail-timeout";
+  if (m.includes("too many") || m.includes("rate limit") || m.includes("429") || m.includes("throttled") || m.includes("take a breath"))
+    return "rate-limit";
+  if (m.includes("net::") || m.includes("timeout") || m.includes("econnreset") || m.includes("enotfound"))
+    return "network";
+  return "other";
+}
+
+/**
+ * Run one full provisioning attempt inside fresh contexts.
+ *
+ * @param {import('playwright').Browser} browser
+ * @param {object} opts
+ * @param {() => ({server:string, username?:string, password?:string}|null)} [opts.pickProxy]  proxy for THIS attempt (null = direct)
+ * @param {(storageState:object) => Promise<import('playwright').BrowserContext>} [opts.directContextFactory]  factory for a no-proxy context carrying the signup session
+ * @param {(proxyServer:string, errorKind:string) => void} [opts.onProxyFail]  ban hook (rate-limit => never reuse that proxy)
+ */
+async function attempt(browser, opts, attemptNo) {
+  const started = Date.now();
+  const keyName = opts.keyName || randomKeyName();
+  const password = opts.password || randomPassword(16);
+
+  const pick = opts.pickProxy ? opts.pickProxy() : null;
+  if (opts.pickProxy && !pick) {
+    throw new Error("worker out of proxies — semua proxy di partisi ini sudah ke-ban");
+  }
+  const ctxOpts = {
+    locale: "en-US",
+    viewport: { width: 1366, height: 900 },
+    userAgent: DESKTOP_UA,
+    ...(pick ? { proxy: pick } : {}),
+  };
+
+  const platformContext = await browser.newContext(ctxOpts);
+  const inboxContext = await browser.newContext(ctxOpts);
+  const platformPage = await platformContext.newPage();
+  const inboxPage = await inboxContext.newPage();
+  let inbox = null;
+  let email = null;
+  let directContext = null;
+
+  try {
+    log.step(`[try ${attemptNo}] starting account${pick ? ` via ${pick.server}` : " (direct)"}`);
+
+    // 1. Fresh inbox.
+    inbox = createInbox(opts.inboxProvider, inboxPage, {
+      mailBaseUrl: opts.mailBaseUrl,
+      mailboxDomain: opts.mailboxDomain,
+    });
+    const created = await inbox.createInbox();
+    email = created.address;
+
+    // 2. Sign up (through the proxy whenever one is picked).
+    await tokenharbor.signup(platformPage, email, password, opts);
+
+    // 3. Ask for the verification email.
+    await tokenharbor.requestVerificationEmail(platformPage);
+
+    // 4. Read the link from the inbox and follow it.
+    log.step(`waiting for the verification email at ${email}`);
+    const link = await inbox.waitForVerificationLink(email, { timeout: opts.timeout });
+    log.info("verification link received");
+
+    // 4b. HYBRID: verify + mint the key from the machine's own IP.
+    //     Carry the signup session cookies into a no-proxy context.
+    if (opts.directContextFactory && pick) {
+      try {
+        const storage = await platformContext.storageState();
+        directContext = await opts.directContextFactory(storage);
+        const directPage = await directContext.newPage();
+        await tokenharbor.openVerificationLink(directPage, link);
+        const apiKey = await tokenharbor.createApiKey(directPage, keyName);
+        await directContext.close().catch(() => {});
+        directContext = null;
+        log.ok(`hybrid finish di IP bawaan — key=${keyName}`);
+        return {
+          ok: true,
+          email,
+          password,
+          api_key: apiKey,
+          key_name: keyName,
+          api_base: "https://tokenharbor.ai/v1",
+          email_provider: created.provider,
+          proxy: pick.server,
+          hybrid: true,
+          elapsed_ms: Date.now() - started,
+          created_at: new Date().toISOString(),
+        };
+      } catch (err) {
+        await directContext?.close().catch(() => {});
+        directContext = null;
+        log.warn(`hybrid finish gagal (${err.message.slice(0, 90)}) — fallback verify di proxy`);
+      }
+    }
+
+    // 4c. Fallback: verify + mint through the same proxy context.
+    await tokenharbor.openVerificationLink(platformPage, link);
+    const apiKey = await tokenharbor.createApiKey(platformPage, keyName);
+
+    return {
+      ok: true,
+      email,
+      password,
+      api_key: apiKey,
+      key_name: keyName,
+      api_base: "https://tokenharbor.ai/v1",
+      email_provider: created.provider,
+      proxy: pick ? pick.server : "(direct)",
+      hybrid: false,
+      elapsed_ms: Date.now() - started,
+      created_at: new Date().toISOString(),
+    };
+  } catch (err) {
+    const kind = classify(err);
+    // Ban hook: tell the caller this proxy is burnt so it is never reused.
+    if (kind === "rate-limit" && pick && opts.onProxyFail) {
+      try { opts.onProxyFail(pick.server, kind, err.message); } catch { /* ignore */ }
+    }
+    return {
+      ok: false,
+      email: email || null,
+      password,
+      key_name: keyName,
+      proxy: pick ? pick.server : "(direct)",
+      error: err.message,
+      error_kind: kind,
+      elapsed_ms: Date.now() - started,
+      created_at: new Date().toISOString(),
+    };
+  } finally {
+    if (inbox) await inbox.close().catch(() => {});
+    await platformPage.close().catch(() => {});
+    await inboxPage.close().catch(() => {});
+    await platformContext.close().catch(() => {});
+    await inboxContext.close().catch(() => {});
+    await directContext?.close().catch(() => {});
+  }
+}
+
+/**
+ * Provision a single account with retries and backoff.
+ *
+ * @param {import('playwright').Browser} browser
+ * @param {object} opts  — see attempt() for the full option set.
+ * @returns {Promise<object>} result record
+ */
+export async function provisionOne(browser, opts = {}) {
+  const retries = Number.isInteger(opts.retries) ? opts.retries : 2;
+  let last;
+  for (let i = 1; i <= retries + 1; i++) {
+    last = await attempt(browser, opts, i);
+    if (last.ok) return last;
+
+    if (last.error_kind === "rate-limit") {
+      log.warn("rate limit hit — aborting retries for this account");
+      return last;
+    }
+    if (last.error_kind === "email-taken") {
+      log.warn("email taken — aborting retries");
+      return last;
+    }
+    if (i <= retries) {
+      const backoff = Math.min(8000 * i, 30000);
+      log.warn(`attempt ${i} failed (${last.error_kind}); retrying in ${backoff}ms`);
+      await sleep(backoff);
+    }
+  }
+  return last;
+}

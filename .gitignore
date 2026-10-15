@@ -1,0 +1,10 @@
+# tokenharbor-farm output
+keys.txt
+accounts.jsonl
+config.json
+logs/
+pools/*.txt
+pools/*-banned.txt
+pools/*-cooldown.txt
+node_modules/
+*.log
