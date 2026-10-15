@@ -2,147 +2,140 @@
 /**
  * tokenharbor-farm — interactive UI (menu + dashboard live).
  *
- * Layar:
- *   - MENU: pilih angka (proxy on/off, worker count, rotate-ip target, output file…)
- *   - DASHBOARD: status live yang auto-refresh, event ringkas (bukan log spam)
+ * Input flow:
+ *   - mode MENU     : ketik angka [1-9] lalu Enter (aksi langsung / masuk prompt)
+ *   - mode PROMPT   : ketik nilai lalu Enter (Backspace hapus, Esc batal)
+ *   - mode DASHBOARD: [s] stop, [q] keluar
  *
- * Full logs tetap ditulis ke logs/worker-*.log (auto-clear tiap run).
- *
- * Control:
- *   [1-9] pull menu, [Enter] confirm, [q] quit, [s] stop farm
+ * Layar ANSI minimal, render penuh per keystroke. Tidak ada flicker abuse.
+ * Non-TTY (piped): render sekali lalu jalan sebagai headless-status.
  */
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig, saveConfig, resetConfig } from "./config.mjs";
+import { loadConfig, saveConfig } from "./config.mjs";
 import { onEvent } from "./events.mjs";
 import { Farm } from "./core/farm.mjs";
 import { clearLogsOnStart, logFarm } from "./utils/logs.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-// ---------- ANSI helpers ----------
 const ESC = "\x1b[";
 const C = {
   reset: ESC + "0m", bold: ESC + "1m", dim: ESC + "2m",
   red: ESC + "31m", green: ESC + "32m", yellow: ESC + "33m",
-  blue: ESC + "34m", magenta: ESC + "35m", cyan: ESC + "36m",
+  blue: ESC + "34m", cyan: ESC + "36m", gray: ESC + "90m",
 };
 const hideCursor = () => process.stdout.write(ESC + "?25l");
 const showCursor = () => process.stdout.write(ESC + "?25h");
 const clearScreen = () => process.stdout.write(ESC + "2J" + ESC + "H");
 
-// ---------- state ----------
 let cfg = loadConfig();
 let farm = null;
 let farmBusy = false;
-let screen = "menu"; // menu | dashboard
-const events = [];   // event terbaru (ringkas)
-const MAX_EVENTS = 8;
 
-function pushEvent(ev) {
-  const short = summarize(ev);
-  if (short) {
-    events.push(short);
-    if (events.length > MAX_EVENTS) events.shift();
-  }
-}
+let mode = "menu";       // menu | prompt | dashboard
+let promptField = null;  // key PROMPTS
+let promptInitial = "";
+let promptInput = "";
+let menuBuf = "";
 
+const events = [];
+const MAX_EVENTS = 10;
+
+// ---------- field prompt ----------
+const PROMPTS = {
+  proxyFile: {
+    label: "File proxy (path relatif/absolut). Contoh: pools/proxies.txt",
+    parse: (v) => { const s = v.trim(); if (!s) throw new Error("path tidak boleh kosong"); return s; },
+    apply: (v) => { cfg.proxy.file = v; saveConfig(); },
+  },
+  workerCount: {
+    label: "Jumlah worker (1-50)",
+    parse: (v) => { const n = parseInt(v, 10); if (!n || n < 1 || n > 50) throw new Error("harus angka 1-50"); return n; },
+    apply: (v) => { cfg.worker.count = v; saveConfig(); },
+  },
+  keysFile: {
+    label: "File output keys. Contoh: keys.txt",
+    parse: (v) => v.trim() || "keys.txt",
+    apply: (v) => { cfg.output.keysFile = v; saveConfig(); },
+  },
+  accountsFile: {
+    label: "File output accounts. Contoh: accounts.jsonl",
+    parse: (v) => v.trim() || "accounts.jsonl",
+    apply: (v) => { cfg.output.accountsFile = v; saveConfig(); },
+  },
+  target: {
+    label: "Target rotate-ip (0 = sampai stop, N = sampai N key). Contoh: 50",
+    parse: (v) => { const n = parseInt(v, 10); if (Number.isNaN(n) || n < 0) throw new Error("harus angka >= 0"); return n; },
+    apply: (v) => { cfg.rotateip.target = v; saveConfig(); },
+  },
+};
+
+// ---------- summarize event ----------
 function summarize(ev) {
   switch (ev.type) {
-    case "key-found":
-      return `${C.green}🌊 KEY ${ev.api_key.slice(0, 24)}… via ${ev.proxy}${C.reset}`;
-    case "proxy-banned":
-      return `${C.red}🚫 banned ${ev.proxy}${C.reset}`;
-    case "proxy-cool":
-      return `${C.yellow}⏳ cooldown ${ev.proxy} (${ev.level})${C.reset}`;
-    case "worker-start":
-      return `${C.cyan}▶ worker ${ev.worker} start (${ev.proxyCount} proxy)${C.reset}`;
-    case "worker-done":
-      return `${C.dim}■ worker ${ev.worker} selesai (${ev.done} key)${C.reset}`;
-    case "attempt-fail":
-      return `${C.dim}✘ ${ev.kind}${C.reset}`;
-    case "error":
-      return `${C.red}❌ ${ev.message}${C.reset}`;
-    case "notice":
-      return `${C.blue}ℹ ${ev.message}${C.reset}`;
-    default:
-      return null;
+    case "key-found": return `${C.green}🌊 KEY ${(ev.api_key || "").slice(0, 24)}… via ${ev.proxy}${C.reset}`;
+    case "proxy-banned": return `${C.red}🚫 banned ${ev.proxy}${C.reset}`;
+    case "proxy-cool": return `${C.yellow}⏳ cooldown ${ev.proxy} (${ev.level})${C.reset}`;
+    case "worker-start": return `${C.cyan}▶ worker ${ev.worker} start (${ev.proxyCount} proxy)${C.reset}`;
+    case "worker-done": return `${C.dim}■ worker ${ev.worker} selesai (${ev.done} key)${C.reset}`;
+    case "attempt-fail": return `${C.gray}✘ ${ev.kind}${C.reset}`;
+    case "error": return `${C.red}❌ ${ev.message}${C.reset}`;
+    case "notice": return `${C.blue}ℹ ${ev.message}${C.reset}`;
+    default: return null;
   }
 }
 
-// ---------- input (raw mode) ----------
-process.stdin.setRawMode?.(true);
+function pushEvent(ev) {
+  const s = summarize(ev);
+  if (s) { events.push(s); if (events.length > MAX_EVENTS) events.shift(); }
+}
+
+// ---------- input ----------
+let tty = true;
+try { process.stdin.setRawMode(true); } catch { tty = false; }
 process.stdin.resume();
 process.stdin.setEncoding("utf8");
 
-let inputBuf = "";
 function onKey(chunk) {
   for (const ch of chunk) {
-    if (ch === "\u0003") process.exit(0);           // ctrl-c
-    if (ch === "q" || ch === "Q") process.exit(0);   // quit
+    if (ch === "\u0003") process.exit(0); // ctrl-c
+    if (mode === "prompt") {
+      if (ch === "\r" || ch === "\n") return confirmPrompt();
+      if (ch === "\x7f" || ch === "\x08") { promptInput = promptInput.slice(0, -1); }
+      else if (ch === "\u001b") { promptInput = ""; mode = "menu"; }        // Esc batal
+      else if (ch >= " " && ch !== "\u001b") promptInput += ch;
+      render();
+      continue;
+    }
+    if (mode === "dashboard") {
+      if (ch === "s" || ch === "S") { if (farm) farm.stop(); }
+      if (ch === "q" || ch === "Q") process.exit(0);
+      continue;
+    }
+    // menu
+    if (ch === "q" || ch === "Q") process.exit(0);
     if (ch === "s" || ch === "S") { if (farm) farm.stop(); }
-    if (ch >= "0" && ch <= "9") { inputBuf += ch; render(); }
-    if (ch === "\r" || ch === "\n") { handleSelect(inputBuf); inputBuf = ""; render(); }
+    if (ch === "\r" || ch === "\n") { flushMenu(); continue; }
+    if (ch >= "0" && ch <= "9") { menuBuf += ch; render(); }
   }
 }
 process.stdin.on("data", onKey);
 
-// ---------- render ----------
-function render() {
-  if (screen === "menu") renderMenu();
-  else renderDashboard();
+function flushMenu() {
+  const n = parseInt(menuBuf, 10);
+  menuBuf = "";
+  if (n && !Number.isNaN(n)) handleMenu(n);
+  render();
 }
 
-function renderMenu() {
-  clearScreen();
-  process.stdout.write(C.bold + "🛰  TOKENHARBOR-FARM" + C.reset + C.dim + " v1.0.0" + C.reset + "\n\n");
-  process.stdout.write("─ Pengaturan ─────────────────────────────\n");
-  process.stdout.write(` 1. Proxy:           ${cfg.proxy.enabled ? C.green + "ON" : C.red + "OFF"}${cfg.proxy.enabled ? ` (${poolCount()} proxy)` : ""}${C.reset}\n`);
-  process.stdout.write(` 2. File proxy:      ${cfg.proxy.file}\n`);
-  process.stdout.write(` 3. Worker:          ${cfg.worker.count}\n`);
-  process.stdout.write(` 4. Inbox provider:  ${cfg.worker.inboxProvider}\n`);
-  process.stdout.write(` 5. Hybrid (verify+mint IP bawaan): ${cfg.worker.hybridOff ? "OFF" : C.green + "ON" + C.reset}\n`);
-  process.stdout.write(` 6. Output keys:     ${cfg.output.keysFile}\n`);
-  process.stdout.write(` 7. Output accounts: ${cfg.output.accountsFile}\n`);
-  process.stdout.write(` 8. Target (rotate-ip): ${cfg.rotateip.target === 0 ? "∞ (sampai stop)" : cfg.rotateip.target + " key"}\n`);
-  process.stdout.write("\n─ Aksi ────────────────────────────────────\n");
-  process.stdout.write(` 9. ▶ START farm\n`);
-  process.stdout.write(` S. Stop farm\n`);
-  process.stdout.write(` Q. Keluar\n`);
-  if (inputBuf) process.stdout.write(`\n${C.yellow}Input: ${inputBuf}${C.reset}`);
-  process.stdout.write("\n\n" + C.dim + "pilih angka lalu Enter" + C.reset);
-}
-
-function poolCount() {
-  try {
-    const p = resolve(ROOT, cfg.proxy.file);
-    if (!existsSync(p)) return 0;
-    return readFileSync(p, "utf8").split(/\r?\n/).filter((l) => l.trim()).length;
-  } catch { return 0; }
-}
-
-function handleSelect(v) {
-  const n = parseInt(v, 10);
-  if (!n) return;
+function handleMenu(n) {
   switch (n) {
-    case 1: {
-      cfg.proxy.enabled = !cfg.proxy.enabled;
-      saveConfig();
-      break;
-    }
-    case 2: {
-      // prompt jalur file (isi manual sederhana pakai inputBuf lanjutan)
-      cfg.proxy.file = cfg.proxy.file === "pools/proxies.txt" ? "pools/proxies.txt" : cfg.proxy.file;
-      saveConfig();
-      break;
-    }
-    case 3: {
-      cfg.worker.count = cfg.worker.count >= 5 ? 1 : cfg.worker.count + 1;
-      saveConfig();
-      break;
-    }
+    case 1: cfg.proxy.enabled = !cfg.proxy.enabled; saveConfig(); break;
+    case 2: enterPrompt("proxyFile", cfg.proxy.file); break;
+    case 3: enterPrompt("workerCount", String(cfg.worker.count)); break;
     case 4: {
       const order = ["auto", "tempmail-lol", "mail-tm", "guerrillamail", "temp-email-dev"];
       const i = order.indexOf(cfg.worker.inboxProvider);
@@ -150,44 +143,46 @@ function handleSelect(v) {
       saveConfig();
       break;
     }
-    case 5: {
-      cfg.worker.hybridOff = !cfg.worker.hybridOff;
-      saveConfig();
-      break;
-    }
-    case 6: {
-      cfg.output.keysFile = cfg.output.keysFile === "keys.txt" ? "keys-2.txt" : "keys.txt";
-      saveConfig();
-      break;
-    }
-    case 7: {
-      cfg.output.accountsFile = cfg.output.accountsFile === "accounts.jsonl" ? "accounts-2.jsonl" : "accounts.jsonl";
-      saveConfig();
-      break;
-    }
-    case 8: {
-      // target: 0 → 5 → 10 → 20 → 50 → 0
-      const seq = [0, 5, 10, 20, 50];
-      const i = seq.indexOf(cfg.rotateip.target);
-      cfg.rotateip.target = seq[(i + 1) % seq.length];
-      saveConfig();
-      break;
-    }
-    case 9: {
-      startFarm();
-      break;
-    }
+    case 5: cfg.worker.hybridOff = !cfg.worker.hybridOff; saveConfig(); break;
+    case 6: enterPrompt("keysFile", cfg.output.keysFile); break;
+    case 7: enterPrompt("accountsFile", cfg.output.accountsFile); break;
+    case 8: enterPrompt("target", String(cfg.rotateip.target)); break;
+    case 9: startFarm(); break;
+    default: break;
   }
 }
 
-function renderDashboard() {
-  clearScreen();
-  const keys = countKeys();
-  process.stdout.write(C.bold + "🛰  FARMLIVE" + C.reset + C.dim + `  keys=${keys}  target=${cfg.rotateip.target || "∞"}  ` + C.cyan + `farm: ${farmBusy ? "RUNNING" : "IDLE"}` + C.reset + "\n\n");
-  process.stdout.write("─ Event ─────────────────────────────\n");
-  if (!events.length) process.stdout.write(C.dim + "  (menunggu event…)" + C.reset + "\n");
-  for (const e of events) process.stdout.write("  " + e + "\n");
-  process.stdout.write("\n" + C.dim + "[s] stop   [q] keluar   [menu] Esc" + C.reset);
+function enterPrompt(field, initial) {
+  promptField = field;
+  promptInitial = initial || "";
+  promptInput = "";   // mulai kosong; initial cuma placeholder
+  mode = "prompt";
+  render();
+}
+
+function confirmPrompt() {
+  const f = PROMPTS[promptField];
+  // kosong -> pakai placeholder (nilai lama) tanpa di-parse ulang
+  const raw = promptInput.trim() === "" ? promptInitial : promptInput;
+  try {
+    const v = f.parse(raw);
+    f.apply(v);
+    mode = "menu";
+  } catch (e) {
+    events.push(`${C.red}⚠ ${e.message}${C.reset}`);
+    if (events.length > MAX_EVENTS) events.shift();
+    mode = "menu";
+  }
+  render();
+}
+
+// ---------- render ----------
+function poolCount() {
+  try {
+    const p = resolve(ROOT, cfg.proxy.file);
+    if (!existsSync(p)) return 0;
+    return readFileSync(p, "utf8").split(/\r?\n/).filter((l) => l.trim()).length;
+  } catch { return 0; }
 }
 
 function countKeys() {
@@ -198,11 +193,78 @@ function countKeys() {
   } catch { return 0; }
 }
 
-// ---------- farm lifecycle ----------
+function banner() {
+  return C.bold + "🛰 TOKENHARBOR-FARM" + C.reset + C.dim + " v1.0.0" + C.reset;
+}
+
+function render() {
+  clearScreen();
+  if (!tty) { renderStatic(); return; }
+  if (mode === "prompt") renderPrompt();
+  else if (mode === "dashboard") renderDashboard();
+  else renderMenu();
+}
+
+// mode non-TTY (piped): print statis sekali, jangan spam ANSI
+function renderStatic() {
+  let s = banner() + "\n\n";
+  s += `  Proxy: ${cfg.proxy.enabled ? "ON" : "OFF"} | workers: ${cfg.worker.count} | target: ${cfg.rotateip.target || "∞"}\n`;
+  s += `  keys: ${countKeys()}\n`;
+  process.stdout.write(s + "\n");
+}
+
+function renderMenu() {
+  let s = banner() + "\n\n";
+  s += "─ Pengaturan ──────────────────────\n";
+  s += ` 1. Proxy           ${cfg.proxy.enabled ? C.green + "ON " : C.red + "OFF"}${C.reset}${cfg.proxy.enabled ? ` (${poolCount()} proxy di pool)` : " (direct IP bawaan)"}\n`;
+  s += ` 2. File proxy      ${cfg.proxy.file}\n`;
+  s += ` 3. Jumlah worker   ${cfg.worker.count}\n`;
+  s += ` 4. Inbox provider  ${cfg.worker.inboxProvider}\n`;
+  s += ` 5. Hybrid (verify+mint IP bawaan)  ${cfg.worker.hybridOff ? C.red + "OFF" : C.green + "ON"}${C.reset}\n`;
+  s += ` 6. Output keys     ${cfg.output.keysFile}\n`;
+  s += ` 7. Output accounts ${cfg.output.accountsFile}\n`;
+  s += ` 8. Target rotate-ip ${cfg.rotateip.target === 0 ? "∞ (sampai stop)" : cfg.rotateip.target + " key"}\n`;
+  s += "\n─ Aksi ───────────────────────────\n";
+  s += ` ${C.green}9. ▶ START farm${C.reset}\n`;
+  s += ` S. Stop farm   Q. Keluar\n`;
+  if (events.length) {
+    s += "\n─ Event terakhir ────────────────────\n";
+    for (const e of events.slice(-6)) s += "  " + e + "\n";
+  }
+  s += "\n" + C.gray + "ketik angka lalu Enter" + C.reset;
+  if (menuBuf) s += "\n\n" + C.yellow + "> " + menuBuf + C.reset;
+  process.stdout.write(s + "\n");
+  hideCursor();
+}
+
+function renderPrompt() {
+  const f = PROMPTS[promptField];
+  let s = banner() + "\n\n";
+  s += C.bold + f.label + C.reset + "\n\n";
+  s += "> " + (promptInput || C.gray + promptInitial + C.reset) + C.dim + "▏" + C.reset + "\n\n";
+  s += C.gray + "Enter = simpan (kosong = pakai nilai lama)   Backspace = hapus   Esc = batal" + C.reset + "\n";
+  process.stdout.write(s);
+  showCursor();
+}
+
+function renderDashboard() {
+  const keys = countKeys();
+  let s = banner() + "\n\n";
+  s += C.bold + `🔑 ${keys} key` + C.reset + C.dim + `  ·  target ${cfg.rotateip.target || "∞"}  ·  ` + (farmBusy ? C.green + "RUNNING" : C.yellow + "IDLE") + C.reset + "\n\n";
+  s += "─ Event ───────────────────────────\n";
+  if (!events.length) s += C.gray + "  (menunggu event…)" + C.reset + "\n";
+  for (const e of events.slice(-MAX_EVENTS)) s += "  " + e + "\n";
+  s += "\n" + C.gray + "[s] stop   [q] keluar" + C.reset;
+  process.stdout.write(s + "\n");
+  hideCursor();
+}
+
+// ---------- farm ----------
 async function startFarm() {
   if (farmBusy) return;
   farmBusy = true;
-  screen = "dashboard";
+  mode = "dashboard";
+  events.length = 0;
   clearLogsOnStart();
 
   farm = new Farm(cfg);
@@ -222,7 +284,7 @@ async function startFarm() {
     unsub();
     farmBusy = false;
     farm = null;
-    screen = "menu";
+    mode = "menu";
     render();
   }
 }
@@ -231,5 +293,4 @@ async function startFarm() {
 hideCursor();
 process.on("exit", showCursor);
 render();
-// render ulang tiap 2s biar keys count di dashboard selalu fresh
-setInterval(() => { if (screen === "dashboard") render(); }, 2000);
+setInterval(() => { if (mode === "dashboard") render(); }, 2000);
