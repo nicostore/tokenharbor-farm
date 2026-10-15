@@ -30,6 +30,24 @@ const C = {
 const hideCursor = () => process.stdout.write(ESC + "?25l");
 const showCursor = () => process.stdout.write(ESC + "?25h");
 const clearScreen = () => process.stdout.write(ESC + "2J" + ESC + "H");
+// Alternate screen buffer: render di buffer terpisah, swap saat keluar —
+// menghilangkan flicker scrollback & redraw yang kelihatan.
+const ENTER_ALT = ESC + "?1049h";
+const LEAVE_ALT = ESC + "?1049l";
+
+// Throttle render: event bisa datang ratusan/detik (burst), kita coalesce
+// jadi maks 1 render per 60ms — layar tetap responsif, CPU nggak kepakai.
+let dirty = false;
+let renderTimer = null;
+function scheduleRender() {
+  if (dirty) return;          // sudah ada render terjadwal
+  dirty = true;
+  renderTimer = setTimeout(() => {
+    dirty = false;
+    renderTimer = null;
+    render();
+  }, 60);
+}
 
 let cfg = loadConfig();
 let farm = null;
@@ -320,7 +338,7 @@ async function startFarm() {
     if (ev.type === "key-found") logFarm(`KEY ${ev.api_key} via ${ev.proxy}`);
     if (ev.type === "attempt-fail") logFarm(`FAIL ${ev.kind} ${ev.proxy || ""}`);
     if (ev.type === "proxy-banned") logFarm(`BANNED ${ev.proxy}`);
-    render();
+    scheduleRender();
   });
 
   try {
@@ -338,6 +356,12 @@ async function startFarm() {
 
 // ---------- boot ----------
 hideCursor();
-process.on("exit", showCursor);
+process.stdout.write(ENTER_ALT);
+process.on("exit", () => {
+  showCursor();
+  process.stdout.write(LEAVE_ALT);
+});
 render();
-setInterval(() => { if (mode === "dashboard") render(); }, 2000);
+// tick ringan 1s: cuma nge-schedule kalau dashboard (elapsed time jalan);
+// render tetap di-coalesce 60ms, nggak redraw penuh terus.
+setInterval(() => { if (mode === "dashboard") scheduleRender(); }, 1000);
