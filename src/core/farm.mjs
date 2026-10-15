@@ -19,7 +19,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, abs, ensureDirs } from "../config.mjs";
@@ -159,9 +159,39 @@ export class Farm {
   }
 
   handleWorkerEvent(wid, ev) {
+    // Tulis output ke file DULU (sumber data utama) sebelum forward ke bus.
+    if (ev.type === "key-found") this.persistKey(wid, ev);
     // Forwards event dari worker ke bus utama.
     emit(ev.type, { ...ev, worker: wid });
     if (ev.type === "key-found") this.keyCount++;
+  }
+
+  /** Simpan key ke keys.txt (1 baris 1 key) + akun lengkap ke accounts.jsonl. */
+  persistKey(wid, ev) {
+    try {
+      const key = String(ev.api_key || "").trim();
+      if (!key) return;
+      ensureDirs();
+      const kf = abs(this.cfg.output.keysFile);
+      const af = abs(this.cfg.output.accountsFile);
+      // keys.txt: 1 baris per key — recountKeys() menghitung yg startsWith thk_live_
+      appendFileSync(kf, key + "\n", "utf8");
+      // accounts.jsonl: satu objek JSON lengkap per baris
+      const rec = {
+        api_key: key,
+        key_name: ev.key_name || "",
+        email: ev.email || "",
+        password: ev.password || "",
+        proxy: ev.proxy || "",
+        hybrid: ev.hybrid ?? true,
+        worker: ev.worker ?? wid,
+        created_at: new Date().toISOString(),
+      };
+      appendFileSync(af, JSON.stringify(rec) + "\n", "utf8");
+      logFarm(`💾 saved key ${key.slice(0, 24)}… + account`);
+    } catch (e) {
+      logFarm(`⚠️ gagal tulis output: ${e.message}`);
+    }
   }
 
   stopChildren(reason) {
