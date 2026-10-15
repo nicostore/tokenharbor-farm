@@ -26,7 +26,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Block muatan berat (gambar/font/media) — flow cuma butuh DOM text.
 // Script & CSS dibiarkan jalan (form React + Turnstile butuh keduanya).
-function leanRoutes(ctx) {
+export function leanRoutes(ctx) {
   ctx.route("**/*", (route) => {
     const t = route.request().resourceType();
     if (t === "image" || t === "font" || t === "media") return route.abort();
@@ -152,8 +152,10 @@ async function attempt(browser, opts, attemptNo) {
         const directPage = await directContext.newPage();
         step("Verify Email (IP bawaan)", link.slice(0, 40));
         await tokenharbor.openVerificationLink(directPage, link);
-        step("Create API Key", "");
+        step("Email Verified", "");
+        step("Create API KEY", "");
         const apiKey = await tokenharbor.createApiKey(directPage, keyName);
+        step("GET API KEY", apiKey.slice(0, 16));
         await directContext.close().catch(() => {});
         directContext = null;
         log.ok(`hybrid finish di IP bawaan — key=${keyName}`);
@@ -178,8 +180,11 @@ async function attempt(browser, opts, attemptNo) {
     }
 
     // 4c. Fallback: verify + mint through the same proxy context.
+    step("Email Verified", "");
     await tokenharbor.openVerificationLink(platformPage, link);
+    step("Create API KEY", "");
     const apiKey = await tokenharbor.createApiKey(platformPage, keyName);
+    step("GET API KEY", apiKey.slice(0, 16));
 
     return {
       ok: true,

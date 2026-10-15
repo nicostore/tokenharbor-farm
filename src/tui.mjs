@@ -325,7 +325,8 @@ function renderDashboard() {
   const wNote = Math.max(8, W - (4 + 3 + wIp + 3 + wStep + 3 + 8 + 1));
   const wTime = 8;
   let s = banner() + "\n\n";
-  s += C.bold + `🔑 ${keys} key` + C.reset + C.dim + `  ·  target ${cfg.rotateip.target || "∞"}  ·  ` + (farmBusy ? C.green + "RUNNING" : C.yellow + "IDLE") + C.reset + "\n\n";
+  const tgt = cfg.rotateip.target || "∞";
+  s += C.bold + `Success Apikey ${keys}/${tgt}` + C.reset + C.dim + `  ·  ` + (farmBusy ? C.green + "RUNNING" : C.yellow + "IDLE") + C.reset + "\n\n";
   // Tabel live per worker (responsif)
   s += `${C.bold}${pad("Worker", 4)}   ${pad("IP", wIp)} ${pad("Event", wStep)} ${pad("Note", wNote)} ${pad("Time", wTime)}${C.reset}\n`;
   s += sep() + "\n";

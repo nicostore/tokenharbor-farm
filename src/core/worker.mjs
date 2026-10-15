@@ -13,7 +13,7 @@
 import { existsSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig, abs, ensureDirs } from "../config.mjs";
-import { provisionOne } from "./provision.mjs";
+import { provisionOne, DESKTOP_UA, leanRoutes } from "./provision.mjs";
 import { logWorker } from "../utils/logs.mjs";
 
 const cfg = loadConfig();
@@ -176,7 +176,19 @@ async function main() {
           ...(proxy
             ? { pickProxy: () => parseProxyLine(proxy), onProxyFail: (srv, kind, errMsg) => markProxyFail(srv, errMsg) }
             : {}),
-          directContextFactory: cfg.worker.hybridOff ? null : undefined,
+          directContextFactory: cfg.worker.hybridOff
+            ? null
+            : async (storage) => {
+                const ctx = await browser.newContext({
+                  locale: "en-US",
+                  userAgent: DESKTOP_UA,
+                  storageState: storage,
+                  reducedMotion: "reduce",
+                  // TANPA proxy — verify + API key dari IP asli/bawaan mesin.
+                });
+                leanRoutes(ctx);
+                return ctx;
+              },
           onStep: (s) => OUT.emit("step", s),
         });
 
