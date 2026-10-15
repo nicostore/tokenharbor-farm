@@ -1,14 +1,12 @@
 @echo off
 rem ============================================================
 rem  tokenharbor-farm - install Chromium MANUAL (paling stable)
-rem  Menggantikan `npx playwright install chromium` yang sering
-rem  stuck di ekstraksi. Pakai curl.exe + PowerShell bawaan
-rem  Windows (tidak butuh browser, tidak butuh download manual).
-rem
-rem  Hanya perlu dijalankan KALAU Microsoft Edge tidak ada.
-rem  (Bot biasanya pakai Edge - lihat farm.cmd)
+rem  Ganti `npx playwright install chromium` yang suka stuck.
+rem  Pakai curl.exe + PowerShell bawaan Windows.
+rem  Kalau Chromium sudah pernah terpasang, langsung skip.
 rem ============================================================
 cd /d "%~dp0"
+setlocal EnableExtensions
 
 set "REV=1134"
 set "V=129.0.6668.29"
@@ -16,8 +14,14 @@ set "URL=https://playwright.azureedge.net/builds/chromium/%REV%/chromium-win64.z
 set "MPDIR=%LOCALAPPDATA%\ms-playwright"
 set "ZIP=%MPDIR%\chromium-%REV%-manual.zip"
 set "DEST=%MPDIR%\chromium-%REV%"
+set "C1=%DEST%\chrome-win64\chrome.exe"
+set "C2=%DEST%\chrome-win\chrome.exe"
 
-echo [1/4] Cek curl.exe...
+echo [1/4] Cek Chromium sudah terpasang...
+if exist "%C1%" goto :done
+if exist "%C2%" goto :fixdir
+
+echo [2/4] Cek curl.exe...
 where curl >nul 2>nul
 if errorlevel 1 (
   echo [ERROR] curl tidak ditemukan. Windows 10/11 harusnya punya.
@@ -25,10 +29,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [2/4] Buat folder browser...
+echo [3/4] Download Chromium %V% - 140MB...
 if not exist "%MPDIR%" mkdir "%MPDIR%"
-
-echo [3/4] Download Chromium %V% (%REV%) - 140MB, ini yang lama...
 curl -L --retry 3 --retry-delay 5 -o "%ZIP%" "%URL%"
 if errorlevel 1 (
   echo [ERROR] Download gagal. Cek internet, lalu jalankan ulang.
@@ -36,7 +38,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [4/4] Ekstrak (PowerShell - reliable)...
+echo [4/4] Ekstrak pakai PowerShell...
 powershell -NoProfile -Command "Expand-Archive -Path '%ZIP%' -DestinationPath '%DEST%' -Force"
 if errorlevel 1 (
   echo [ERROR] Ekstraksi gagal.
@@ -45,23 +47,26 @@ if errorlevel 1 (
 )
 del "%ZIP%"
 
-echo.
+if exist "%C1%" goto :done
+if exist "%C2%" goto :fixdir
+
 echo ============================================================
-set "CHROME=%DEST%\chrome-win64\chrome.exe"
-if exist "%CHROME%" (
-  echo  SUKSES! Chromium terpasang di:
-  echo    %CHROME%
-) else (
-  if exist "%DEST%\chrome-win\chrome.exe" (
-    echo  SUKSES! (versi chrome-win) - rename dulu biar dikenali...
-    ren "%DEST%\chrome-win" chrome-win64
-    echo  selesai.
-  ) else (
-    echo  Ekstraksi selesai tapi path chrome.exe tidak ditemukan.
-    echo  Isi folder:
-    dir /b "%DEST%"
-  )
-)
+echo  Ekstraksi selesai tapi chrome.exe tidak ketemu.
+echo  Isi folder:
+dir /b "%DEST%"
+echo ============================================================
+pause
+exit /b 1
+
+:fixdir
+echo  Deteksi folder chrome-win, rename jadi chrome-win64...
+ren "%DEST%\chrome-win" chrome-win64
+echo  selesai.
+
+:done
+echo ============================================================
+echo  SUKSES! Chromium terpasang di:
+echo  %C1%
 echo  Sekarang jalanin farm.cmd
 echo ============================================================
 pause
