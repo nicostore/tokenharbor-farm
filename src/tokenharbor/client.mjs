@@ -139,6 +139,20 @@ export async function signup(page, email, password, opts = {}) {
  * @param {import('playwright').Page} page
  */
 export async function requestVerificationEmail(page) {
+  // Fast path: langsung hit endpoint SMTP-nya via fetch (lebih cepat & ringan
+  // daripada klik UI). Kalau gagal, fallback ke interaksi UI di bawah.
+  const sent = await page
+    .evaluate(() =>
+      fetch("/api/me/send-verification-email", { method: "POST", credentials: "include" })
+        .then((r) => r.ok)
+        .catch(() => false)
+    )
+    .catch(() => false);
+  if (sent) {
+    log.info("verification email requested (API)");
+    return true;
+  }
+
   // The modal ("Enable free models?") may cover the button; dismiss it.
   await page
     .getByRole("button", { name: /^not now$/i })
@@ -204,6 +218,29 @@ export async function openVerificationLink(page, link) {
  * @returns {Promise<string>} the `thk_live_…` key
  */
 export async function createApiKey(page, name) {
+  // Fast path: endpoint API langsung — kalau akun belum verify, responsnya
+  // biasanya berisi "verify" hmm... tapi kalau berhasil, ada mintedPlaintext.
+  const fast = await page
+    .evaluate(() =>
+      fetch("/api/keys", { credentials: "include" })
+        .then((r) => r.json())
+        .catch(() => null)
+    )
+    .catch(() => null);
+  if (fast) {
+    const k =
+      (fast.mintedPlaintext ||
+        (Array.isArray(fast.keys) &&
+          fast.keys.length &&
+          (fast.keys[0].mintedPlaintext || fast.keys[0].plaintext))) ||
+      (fast.apiKey || fast.key || "");
+    if (k) {
+      log.ok(`API key via /api/keys fast-path (${String(k).slice(0, 16)}…)`);
+      return String(k);
+    }
+  }
+
+  // Fallback: UI flow penuh ("+ New key" -> isi label -> create).
   if (!/api-keys/.test(page.url())) {
     await page.goto(API_KEYS_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
   }

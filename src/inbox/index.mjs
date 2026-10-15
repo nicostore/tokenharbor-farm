@@ -431,9 +431,71 @@ export function createGuerrillaMailReader(opts = {}) {
 }
 
 /**
+ * Reader for SuperMail — HTTP API, no browser needed.
+ *   GET  {base}/api/session                       -> { sessionId }
+ *   POST {base}/api/inboxes  (x-session-id)       -> { address }
+ *   GET  {base}/api/inboxes/{email}/messages      -> [ { subject, body, text, html } ]
+ */
+export function createSuperMailReader(opts = {}) {
+  const BASE = opts.mailBaseUrl || "https://supermail.indevs.in";
+  let sid = null;
+  let address = null;
+
+  async function jfetch(path, init = {}) {
+    const headers = {
+      "content-type": "application/json",
+      ...(sid ? { "x-session-id": sid } : {}),
+      ...(init.headers || {}),
+    };
+    const r = await fetch(`${BASE}${path}`, { ...init, headers, signal: AbortSignal.timeout(15000) });
+    const t = await r.text();
+    let j;
+    try { j = t ? JSON.parse(t) : null; } catch { j = t; }
+    if (!r.ok) throw new Error(`supermail api ${r.status} ${path}: ${typeof j === "string" ? j : JSON.stringify(j).slice(0, 120)}`);
+    return j;
+  }
+
+  return {
+    provider: "supermail",
+    async createInbox() {
+      const s = await jfetch("/api/session");
+      sid = String(s.sessionId || "");
+      if (!sid) throw new Error(`supermail did not return a sessionId: ${JSON.stringify(s).slice(0, 120)}`);
+      const created = await jfetch("/api/inboxes", {
+        method: "POST",
+        body: JSON.stringify({ domain: "supermail.indevs.in" }),
+      });
+      address = created.address;
+      if (!address) throw new Error(`supermail did not return an address: ${JSON.stringify(created).slice(0, 120)}`);
+      log.info(`inbox ready: ${address} (supermail)`);
+      return { address, provider: "supermail" };
+    },
+    async waitForVerificationLink(a, optsIn = {}) {
+      const timeout = optsIn.timeout ?? 240000;
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        try {
+          const msgs = await jfetch(`/api/inboxes/${encodeURIComponent(a)}/messages`);
+          if (Array.isArray(msgs)) {
+            for (const m of msgs) {
+              const body = `${m.subject || ""} ${m.body || ""} ${m.text || ""} ${m.html || ""} ${JSON.stringify(m)}`;
+              const link = extractVerificationLink(body);
+              if (link) return link;
+            }
+          }
+        } catch { /* transient — retry */ }
+        await sleep(3000);
+      }
+      throw new Error("timed out waiting for the Token Harbor verification email");
+    },
+    async close() { /* nothing to clean up */ },
+  };
+}
+
+/**
  * Factory used by the orchestrator.
  *
- * @param {string} name  "temp-email-dev" | "custom" | "tempmail-lol" | "mail-tm" | "auto"
+ * @param {string} name  "temp-email-dev" | "custom" | "tempmail-lol" | "mail-tm" | "guerrillamail" | "supermail" | "auto"
  * @param {import('playwright').Page|null} page
  * @param {object} [opts]
  */
@@ -445,16 +507,19 @@ export function createInbox(name, page, opts = {}) {
   if (name === "tempmail-lol") return createTempMailLolReader(opts);
   if (name === "mail-tm") return createMailTmReader(opts);
   if (name === "guerrillamail") return createGuerrillaMailReader(opts);
+  if (name === "supermail") return createSuperMailReader(opts);
   if (name === "auto") {
     // Pick a random HTTP provider per account for a fresh pool of domains.
     const r = Math.random();
     let pick;
-    if (r < 0.4) pick = "tempmail-lol";
-    else if (r < 0.7) pick = "mail-tm";
-    else pick = "guerrillamail";
+    if (r < 0.35) pick = "tempmail-lol";
+    else if (r < 0.6) pick = "mail-tm";
+    else if (r < 0.8) pick = "guerrillamail";
+    else pick = "supermail";
     log.info(`inbox auto -> ${pick}`);
     if (pick === "tempmail-lol") return createTempMailLolReader(opts);
     if (pick === "mail-tm") return createMailTmReader(opts);
+    if (pick === "supermail") return createSuperMailReader(opts);
     return createGuerrillaMailReader(opts);
   }
   if (!page) throw new Error("temp-email.dev reader requires a browser page");

@@ -155,7 +155,7 @@ function handleMenu(n) {
     case 2: enterPrompt("proxyFile", cfg.proxy.file); break;
     case 3: enterPrompt("workerCount", String(cfg.worker.count)); break;
     case 4: {
-      const order = ["auto", "tempmail-lol", "mail-tm", "guerrillamail", "temp-email-dev"];
+      const order = ["auto", "tempmail-lol", "mail-tm", "guerrillamail", "supermail", "temp-email-dev"];
       const i = order.indexOf(cfg.worker.inboxProvider);
       cfg.worker.inboxProvider = order[(i + 1) % order.length];
       saveConfig();
