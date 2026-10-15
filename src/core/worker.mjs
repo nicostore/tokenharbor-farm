@@ -149,6 +149,14 @@ async function main() {
           "--ignore-gpu-blocklist",
           "--enable-webgl",
           "--disable-blink-features=AutomationControlled",
+          // hemat CPU/RAM: matiin fitur gak kepake di headless farm
+          "--disable-background-networking",
+          "--disable-component-update",
+          "--disable-sync",
+          "--disable-extensions",
+          "--disable-features=Translate,OptimizationHints,MediaRouter",
+          "--no-first-run",
+          "--no-default-browser-check",
         ];
 
         try {

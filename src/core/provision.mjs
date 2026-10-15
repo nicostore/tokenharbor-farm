@@ -24,6 +24,16 @@ import { log } from "../utils/logger.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Block muatan berat (gambar/font/media) — flow cuma butuh DOM text.
+// Script & CSS dibiarkan jalan (form React + Turnstile butuh keduanya).
+function leanRoutes(ctx) {
+  ctx.route("**/*", (route) => {
+    const t = route.request().resourceType();
+    if (t === "image" || t === "font" || t === "media") return route.abort();
+    return route.continue();
+  });
+}
+
 // Desktop Chrome UA — Vercel Security Checkpoint blocks the HeadlessChrome UA
 // on /verify-email with an endless "We're verifying your browser" wall.
 export const DESKTOP_UA =
@@ -66,16 +76,31 @@ async function attempt(browser, opts, attemptNo) {
     locale: "en-US",
     viewport: { width: 1366, height: 900 },
     userAgent: DESKTOP_UA,
+    reducedMotion: "reduce",
     ...(pick ? { proxy: pick } : {}),
   };
 
   const platformContext = await browser.newContext(ctxOpts);
-  const inboxContext = await browser.newContext(ctxOpts);
   const platformPage = await platformContext.newPage();
-  const inboxPage = await inboxContext.newPage();
+  // Context kedua (inbox) dibuat LAZY — cuma provider yang butuh browser
+  // (temp-email.dev). Auto/tempmail-lol/mail-tm/guerrillamail = HTTP API.
+  let inboxContext = null;
+  let inboxPage = null;
+  const ensureInboxPage = async () => {
+    if (!inboxPage) {
+      inboxContext = await browser.newContext(ctxOpts);
+      leanRoutes(inboxContext);
+      inboxPage = await inboxContext.newPage();
+    }
+    return inboxPage;
+  };
   let inbox = null;
   let email = null;
   let directContext = null;
+
+  // Lean routing: block berat (gambar/font/media) — flow hanya butuh DOM text.
+  // Script & CSS tetap jalan (form + Turnstile butuh).
+  leanRoutes(platformContext);
 
   // Live step callback — worker pakai ini buat tabel dashboard per-action.
   const ip = pick ? pick.server.replace(/^https?:\/\//, "") : "(direct)";
@@ -90,7 +115,11 @@ async function attempt(browser, opts, attemptNo) {
 
     // 1. Fresh inbox.
     step("Start", email ? "" : "");
-    inbox = createInbox(opts.inboxProvider, inboxPage, {
+    // Provider HTTP (auto/tempmail-lol/mail-tm/guerrillamail/custom) TIDAK butuh
+    // browser — passing null berarti context inbox tidak pernah dibuat.
+    // Cuma temp-email.dev yang butuh page.
+    const needsInboxPage = !["auto", "tempmail-lol", "mail-tm", "guerrillamail", "custom", "rest"].includes(opts.inboxProvider);
+    inbox = createInbox(opts.inboxProvider, needsInboxPage ? await ensureInboxPage() : null, {
       mailBaseUrl: opts.mailBaseUrl,
       mailboxDomain: opts.mailboxDomain,
     });
@@ -185,9 +214,9 @@ async function attempt(browser, opts, attemptNo) {
   } finally {
     if (inbox) await inbox.close().catch(() => {});
     await platformPage.close().catch(() => {});
-    await inboxPage.close().catch(() => {});
+    await inboxPage?.close().catch(() => {});
     await platformContext.close().catch(() => {});
-    await inboxContext.close().catch(() => {});
+    await inboxContext?.close().catch(() => {});
     await directContext?.close().catch(() => {});
   }
 }
