@@ -25,11 +25,16 @@ if errorlevel 1 (
 )
 
 echo [3/3] Cek Microsoft Edge (browser utama bot)...
-if exist "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" (
+set "EDGE_PATH=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+if exist "%EDGE_PATH%" (
   echo  Edge ditemukan - tidak perlu download Chromium. Selesai!
 ) else (
-  echo  Edge TIDAK ditemukan. Download Chromium dulu (sekali, 140MB, lama)...
-  call npx playwright install chromium
+  if exist "C:\Program Files\Microsoft\Edge\Application\msedge.exe" (
+    echo  Edge ditemukan - tidak perlu download Chromium. Selesai!
+  ) else (
+    echo  Edge TIDAK ditemukan. Download Chromium dulu (sekali, 140MB, lama)...
+    call npx playwright install chromium
+  )
 )
 
 echo.
