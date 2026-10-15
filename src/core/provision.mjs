@@ -112,7 +112,7 @@ async function attempt(browser, opts, attemptNo) {
     log.step(`waiting for the verification email at ${email}`);
     const link = await inbox.waitForVerificationLink(email, { timeout: opts.timeout });
     log.info("verification link received");
-    step("Verify Link", "");
+    step("Link Received", link.slice(0, 40));
 
     // 4b. HYBRID: verify + mint the key from the machine's own IP.
     //     Carry the signup session cookies into a no-proxy context.
