@@ -247,13 +247,59 @@ function renderPrompt() {
   showCursor();
 }
 
+// State tabel live per worker
+const workerRows = new Map(); // wid -> { ip, step, note, since, status }
+
+function setWorkerStep(ev) {
+  const wid = ev.worker || 0;
+  const row = workerRows.get(wid) || { ip: "", step: "…", note: "", since: Date.now(), status: "idle" };
+  if (ev.type === "step") {
+    row.ip = ev.ip || row.ip;
+    row.step = ev.step || row.step;
+    row.note = ev.note || "";
+    row.since = ev.ts || Date.now();
+    row.status = "work";
+  } else if (ev.type === "worker-start") {
+    row.ip = ev.proxyCount ? "…" : "(direct)";
+    row.step = "Starting";
+    row.since = ev.ts || Date.now();
+    row.status = "work";
+  } else if (ev.type === "key-found") {
+    row.step = "✅ KEY!";
+    row.note = (ev.api_key || "").slice(0, 20);
+    row.status = "done";
+  } else if (ev.type === "attempt-fail") {
+    row.step = "✘ " + (ev.kind || "fail");
+    row.note = "";
+    row.status = "fail";
+  } else if (ev.type === "worker-done") {
+    row.step = "Selesai";
+    row.status = "idle";
+  }
+  workerRows.set(wid, row);
+}
+
+function fmtElapsed(ms) {
+  const s = Math.round((Date.now() - ms) / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`;
+}
+
+function pad(s, n) { s = String(s); return s.length >= n ? s : s + " ".repeat(n - s.length); }
+
 function renderDashboard() {
   const keys = countKeys();
   let s = banner() + "\n\n";
   s += C.bold + `🔑 ${keys} key` + C.reset + C.dim + `  ·  target ${cfg.rotateip.target || "∞"}  ·  ` + (farmBusy ? C.green + "RUNNING" : C.yellow + "IDLE") + C.reset + "\n\n";
-  s += "─ Event ───────────────────────────\n";
-  if (!events.length) s += C.gray + "  (menunggu event…)" + C.reset + "\n";
-  for (const e of events.slice(-MAX_EVENTS)) s += "  " + e + "\n";
+  // Tabel live per worker
+  s += `${C.bold}Worker  IP                          Event             Note        Time${C.reset}\n`;
+  s += "────────────────────────────────────────────────────────────────\n";
+  const ws = [...workerRows.keys()].sort((a, b) => a - b);
+  if (!ws.length) s += C.gray + "  (menunggu worker…)" + C.reset + "\n";
+  for (const wid of ws) {
+    const r = workerRows.get(wid);
+    const color = r.status === "done" ? C.green : r.status === "fail" ? C.red : r.status === "idle" ? C.gray : C.cyan;
+    s += `${pad(wid, 3)}   ${pad(r.ip || "...", 28)} ${color}${pad(r.step, 18)}${C.reset} ${pad(r.note || "", 14)} ${fmtElapsed(r.since)}\n`;
+  }
   s += "\n" + C.gray + "[s] stop   [q] keluar" + C.reset;
   process.stdout.write(s + "\n");
   hideCursor();
@@ -269,6 +315,7 @@ async function startFarm() {
 
   farm = new Farm(cfg);
   const unsub = onEvent((ev) => {
+    setWorkerStep(ev);
     pushEvent(ev);
     if (ev.type === "key-found") logFarm(`KEY ${ev.api_key} via ${ev.proxy}`);
     if (ev.type === "attempt-fail") logFarm(`FAIL ${ev.kind} ${ev.proxy || ""}`);

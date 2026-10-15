@@ -169,6 +169,7 @@ async function main() {
             ? { pickProxy: () => parseProxyLine(proxy), onProxyFail: (srv, kind, errMsg) => markProxyFail(srv, errMsg) }
             : {}),
           directContextFactory: cfg.worker.hybridOff ? null : undefined,
+          onStep: (s) => OUT.emit("step", s),
         });
 
         if (r.ok) {

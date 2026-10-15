@@ -77,27 +77,42 @@ async function attempt(browser, opts, attemptNo) {
   let email = null;
   let directContext = null;
 
+  // Live step callback — worker pakai ini buat tabel dashboard per-action.
+  const ip = pick ? pick.server.replace(/^https?:\/\//, "") : "(direct)";
+  const step = (label, note = "") => {
+    try {
+      opts.onStep && opts.onStep({ step: label, ip, note, elapsed: Date.now() - started });
+    } catch { /* jangan pernah matiin flow karena UI */ }
+  };
+
   try {
     log.step(`[try ${attemptNo}] starting account${pick ? ` via ${pick.server}` : " (direct)"}`);
 
     // 1. Fresh inbox.
+    step("Start", email ? "" : "");
     inbox = createInbox(opts.inboxProvider, inboxPage, {
       mailBaseUrl: opts.mailBaseUrl,
       mailboxDomain: opts.mailboxDomain,
     });
     const created = await inbox.createInbox();
     email = created.address;
+    step("Inbox Ready", email);
 
     // 2. Sign up (through the proxy whenever one is picked).
+    step("Fill Email", email);
     await tokenharbor.signup(platformPage, email, password, opts);
+    step("Submit Signup", "");
 
     // 3. Ask for the verification email.
+    step("Request Verify", "");
     await tokenharbor.requestVerificationEmail(platformPage);
 
     // 4. Read the link from the inbox and follow it.
+    step("Wait Verify Mail", email);
     log.step(`waiting for the verification email at ${email}`);
     const link = await inbox.waitForVerificationLink(email, { timeout: opts.timeout });
     log.info("verification link received");
+    step("Verify Link", "");
 
     // 4b. HYBRID: verify + mint the key from the machine's own IP.
     //     Carry the signup session cookies into a no-proxy context.
@@ -106,7 +121,9 @@ async function attempt(browser, opts, attemptNo) {
         const storage = await platformContext.storageState();
         directContext = await opts.directContextFactory(storage);
         const directPage = await directContext.newPage();
+        step("Verify Email (IP bawaan)", link.slice(0, 40));
         await tokenharbor.openVerificationLink(directPage, link);
+        step("Create API Key", "");
         const apiKey = await tokenharbor.createApiKey(directPage, keyName);
         await directContext.close().catch(() => {});
         directContext = null;
