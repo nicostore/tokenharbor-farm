@@ -233,21 +233,21 @@ function renderStatic() {
 
 function renderMenu() {
   let s = banner() + "\n\n";
-  s += "─ Pengaturan ──────────────────────\n";
+  s += `${C.bold}─ Pengaturan ─${C.reset} ${sep().slice(0, Math.max(termWidth() - 16, 10))}\n`;
   s += ` 1. Proxy           ${cfg.proxy.enabled ? C.green + "ON " : C.red + "OFF"}${C.reset}${cfg.proxy.enabled ? ` (${poolCount()} proxy di pool)` : " (direct IP bawaan)"}\n`;
-  s += ` 2. File proxy      ${cfg.proxy.file}\n`;
+  s += ` 2. File proxy      ${trunc(cfg.proxy.file, Math.max(termWidth() - 20, 20))}\n`;
   s += ` 3. Jumlah worker   ${cfg.worker.count}\n`;
   s += ` 4. Inbox provider  ${cfg.worker.inboxProvider}\n`;
   s += ` 5. Hybrid (verify+mint IP bawaan)  ${cfg.worker.hybridOff ? C.red + "OFF" : C.green + "ON"}${C.reset}\n`;
-  s += ` 6. Output keys     ${cfg.output.keysFile}\n`;
-  s += ` 7. Output accounts ${cfg.output.accountsFile}\n`;
+  s += ` 6. Output keys     ${trunc(cfg.output.keysFile, Math.max(termWidth() - 20, 20))}\n`;
+  s += ` 7. Output accounts ${trunc(cfg.output.accountsFile, Math.max(termWidth() - 20, 20))}\n`;
   s += ` 8. Target rotate-ip ${cfg.rotateip.target === 0 ? "∞ (sampai stop)" : cfg.rotateip.target + " key"}\n`;
-  s += "\n─ Aksi ───────────────────────────\n";
+  s += `\n${C.bold}─ Aksi ─${C.reset} ${sep().slice(0, Math.max(termWidth() - 10, 10))}\n`;
   s += ` ${C.green}9. ▶ START farm${C.reset}\n`;
   s += ` S. Stop farm   Q. Keluar\n`;
   if (events.length) {
-    s += "\n─ Event terakhir ────────────────────\n";
-    for (const e of events.slice(-6)) s += "  " + e + "\n";
+    s += `\n${C.bold}─ Event terakhir ─${C.reset} ${sep().slice(0, Math.max(termWidth() - 20, 10))}\n`;
+    for (const e of events.slice(-6)) s += "  " + trunc(e, Math.max(termWidth() - 4, 20)) + "\n";
   }
   s += "\n" + C.gray + "ketik angka lalu Enter" + C.reset;
   if (menuBuf) s += "\n\n" + C.yellow + "> " + menuBuf + C.reset;
@@ -304,19 +304,37 @@ function fmtElapsed(ms) {
 
 function pad(s, n) { s = String(s); return s.length >= n ? s : s + " ".repeat(n - s.length); }
 
+// ----- responsive helpers -----
+function termWidth() {
+  const w = process.stdout.columns;
+  return w && w > 40 ? w : 80;   // fallback konservatif: 80 kolom (worst-case aman)
+}
+function trunc(s, n) {
+  s = String(s);
+  if (s.length <= n) return s;
+  return s.slice(0, Math.max(1, n - 1)) + "…";
+}
+function sep() { return "─".repeat(Math.max(termWidth() - 1, 20)); }
+
 function renderDashboard() {
   const keys = countKeys();
+  const W = termWidth();
+  // proporsi kolom: worker(4) ip(30%) event(22%) note(sisa) time(8)
+  const wIp = Math.max(12, Math.floor(W * 0.30));
+  const wStep = Math.max(10, Math.floor(W * 0.20));
+  const wNote = Math.max(8, W - (4 + 3 + wIp + 3 + wStep + 3 + 8 + 1));
+  const wTime = 8;
   let s = banner() + "\n\n";
   s += C.bold + `🔑 ${keys} key` + C.reset + C.dim + `  ·  target ${cfg.rotateip.target || "∞"}  ·  ` + (farmBusy ? C.green + "RUNNING" : C.yellow + "IDLE") + C.reset + "\n\n";
-  // Tabel live per worker
-  s += `${C.bold}Worker  IP                          Event             Note        Time${C.reset}\n`;
-  s += "────────────────────────────────────────────────────────────────\n";
+  // Tabel live per worker (responsif)
+  s += `${C.bold}${pad("Worker", 4)}   ${pad("IP", wIp)} ${pad("Event", wStep)} ${pad("Note", wNote)} ${pad("Time", wTime)}${C.reset}\n`;
+  s += sep() + "\n";
   const ws = [...workerRows.keys()].sort((a, b) => a - b);
   if (!ws.length) s += C.gray + "  (menunggu worker…)" + C.reset + "\n";
   for (const wid of ws) {
     const r = workerRows.get(wid);
     const color = r.status === "done" ? C.green : r.status === "fail" ? C.red : r.status === "idle" ? C.gray : C.cyan;
-    s += `${pad(wid, 3)}   ${pad(r.ip || "...", 28)} ${color}${pad(r.step, 18)}${C.reset} ${pad(r.note || "", 14)} ${fmtElapsed(r.since)}\n`;
+    s += `${pad(wid, 4)}   ${pad(trunc(r.ip || "...", wIp), wIp)} ${color}${pad(trunc(r.step, wStep), wStep)}${C.reset} ${pad(trunc(r.note || "", wNote), wNote)} ${pad(fmtElapsed(r.since), wTime)}\n`;
   }
   s += "\n" + C.gray + "[s] stop   [q] keluar" + C.reset;
   process.stdout.write(s + "\n");
@@ -361,6 +379,8 @@ process.on("exit", () => {
   showCursor();
   process.stdout.write(LEAVE_ALT);
 });
+// Resize window -> UI langsung menyesuaikan lebar kolom (no restart).
+process.stdout.on("resize", () => { if (mode !== "dashboard" || farmBusy) render(); });
 render();
 // tick ringan 1s: cuma nge-schedule kalau dashboard (elapsed time jalan);
 // render tetap di-coalesce 60ms, nggak redraw penuh terus.

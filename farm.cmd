@@ -5,6 +5,9 @@ rem  Jalanin TUI interaktif. Butuh Node.js >= 18 sudah install.
 rem ============================================================
 cd /d "%~dp0"
 
+rem --- Ukuran window konsisten: 110 kolom x 32 baris ---
+mode con: cols=110 lines=32 >nul 2>nul
+
 where node >nul 2>nul
 if errorlevel 1 (
   echo [ERROR] Node.js tidak ditemukan di PATH.
