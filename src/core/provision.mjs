@@ -74,7 +74,9 @@ async function attempt(browser, opts, attemptNo) {
   }
   const ctxOpts = {
     locale: "en-US",
-    viewport: { width: 1366, height: 900 },
+    // C: viewport kecil — lebih sedikit pixel yang di-rasterize SwiftShader (software GPU),
+    // CPU turun tanpa ngaruh ke Turnstile/dashboard (mereka nggak peduli ukuran viewport).
+    viewport: { width: 800, height: 600 },
     userAgent: DESKTOP_UA,
     reducedMotion: "reduce",
     ...(pick ? { proxy: pick } : {}),
@@ -136,7 +138,17 @@ async function attempt(browser, opts, attemptNo) {
     step("Request Verify", "");
     await tokenharbor.requestVerificationEmail(platformPage);
 
-    // 4. Read the link from the inbox and follow it.
+    // ===== A: lepas renderer + GPU selama fase TERPANJANG (nunggu email) =====
+    // Email di-poll via HTTP (browser nggak dibutuhin), jadi tutup context
+    // platform SEKARANG — renderer & swiftshader process mati, CPU turun drastis
+    // di fase yang nunggu 1-4 menit. Session cookies disimpan dulu buat hybrid
+    // (verify + mint dari IP bawaan).
+    const storage = await platformContext.storageState().catch(() => null);
+    await platformPage.close().catch(() => {});
+    await platformContext.close().catch(() => {});
+    if (!storage) throw new Error("storageState gagal setelah signup — session tidak bisa dipakai untuk verify");
+
+    // 4. Read the link from the inbox and follow it (murni HTTP polling).
     step("Wait Verify Mail", email);
     log.step(`waiting for the verification email at ${email}`);
     const link = await inbox.waitForVerificationLink(email, { timeout: opts.timeout });
@@ -147,7 +159,6 @@ async function attempt(browser, opts, attemptNo) {
     //     Carry the signup session cookies into a no-proxy context.
     if (opts.directContextFactory && pick) {
       try {
-        const storage = await platformContext.storageState();
         directContext = await opts.directContextFactory(storage);
         const directPage = await directContext.newPage();
         step("Verify Email (IP bawaan)", link.slice(0, 40));
@@ -179,26 +190,34 @@ async function attempt(browser, opts, attemptNo) {
       }
     }
 
-    // 4c. Fallback: verify + mint through the same proxy context.
-    step("Email Verified", "");
-    await tokenharbor.openVerificationLink(platformPage, link);
-    step("Create API KEY", "");
-    const apiKey = await tokenharbor.createApiKey(platformPage, keyName);
-    step("GET API KEY", apiKey.slice(0, 16));
+    // 4c. Fallback: verify + mint — context BARU dari cookies tersimpan (yang
+    //     lama sudah ditutup di fase A). Pakai proxy bila ada (perilaku lama).
+    const fbContext = await browser.newContext({ ...ctxOpts, storageState: storage });
+    leanRoutes(fbContext);
+    const fbPage = await fbContext.newPage();
+    try {
+      step("Email Verified", "");
+      await tokenharbor.openVerificationLink(fbPage, link);
+      step("Create API KEY", "");
+      const apiKey = await tokenharbor.createApiKey(fbPage, keyName);
+      step("GET API KEY", apiKey.slice(0, 16));
 
-    return {
-      ok: true,
-      email,
-      password,
-      api_key: apiKey,
-      key_name: keyName,
-      api_base: "https://tokenharbor.ai/v1",
-      email_provider: created.provider,
-      proxy: pick ? pick.server : "(direct)",
-      hybrid: false,
-      elapsed_ms: Date.now() - started,
-      created_at: new Date().toISOString(),
-    };
+      return {
+        ok: true,
+        email,
+        password,
+        api_key: apiKey,
+        key_name: keyName,
+        api_base: "https://tokenharbor.ai/v1",
+        email_provider: created.provider,
+        proxy: pick ? pick.server : "(direct)",
+        hybrid: false,
+        elapsed_ms: Date.now() - started,
+        created_at: new Date().toISOString(),
+      };
+    } finally {
+      await fbContext.close().catch(() => {});
+    }
   } catch (err) {
     const kind = classify(err);
     // Ban hook: tell the caller this proxy is burnt so it is never reused.

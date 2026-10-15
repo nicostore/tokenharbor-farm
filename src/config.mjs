@@ -23,7 +23,7 @@ export const DEFAULTS = {
   },
   worker: {
     count: 3,
-    retriesPerAccount: 2,
+    retriesPerAccount: 1,   // B: tiap retry = browser baru (full launch + swiftshader) — 1 retry cukup
     timeoutMs: 240000,
     inboxProvider: "auto",   // auto | tempmail-lol | mail-tm | guerrillamail | temp-email-dev
     hybridOff: false,        // false = verify+mint pakai IP bawaan (recommended)
