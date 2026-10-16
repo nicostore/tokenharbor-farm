@@ -184,6 +184,7 @@ export class Farm {
         password: ev.password || "",
         proxy: ev.proxy || "",
         hybrid: ev.hybrid ?? true,
+        free_models: ev.free_models ?? false,
         worker: ev.worker ?? wid,
         created_at: new Date().toISOString(),
       };

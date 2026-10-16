@@ -201,8 +201,9 @@ async function main() {
             key_name: r.key_name,
             proxy: r.proxy,
             hybrid: r.hybrid,
+            free_models: r.free_models,
           });
-          OUT.log(`✅ KEY: ${r.api_key.slice(0, 24)}… via ${r.proxy}`);
+          OUT.log(`✅ KEY: ${r.api_key.slice(0, 24)}… via ${r.proxy}${r.free_models ? " (free models)" : ""}`);
         } else {
           if (r.error_kind === "rate-limit" && proxy) markProxyFail(proxy, r.error);
           OUT.emit("attempt-fail", { worker: wid, kind: r.error_kind, proxy: r.proxy });

@@ -134,6 +134,13 @@ async function attempt(browser, opts, attemptNo) {
     await tokenharbor.signup(platformPage, email, password, opts);
     step("Submit Signup", "");
 
+    // 2b. Enable free models (Turbo ref): jangan biarkan akun dapet plan terbatas.
+    let freeModels = false;
+    try {
+      freeModels = await tokenharbor.enableFreeModels(platformPage);
+      if (freeModels) step("Free Models ON", "");
+    } catch { /* non-blocking */ }
+
     // 3. Ask for the verification email.
     step("Request Verify", "");
     await tokenharbor.requestVerificationEmail(platformPage);
@@ -180,6 +187,7 @@ async function attempt(browser, opts, attemptNo) {
           email_provider: created.provider,
           proxy: pick.server,
           hybrid: true,
+          free_models: freeModels,
           elapsed_ms: Date.now() - started,
           created_at: new Date().toISOString(),
         };
@@ -212,6 +220,7 @@ async function attempt(browser, opts, attemptNo) {
         email_provider: created.provider,
         proxy: pick ? pick.server : "(direct)",
         hybrid: false,
+        free_models: freeModels,
         elapsed_ms: Date.now() - started,
         created_at: new Date().toISOString(),
       };

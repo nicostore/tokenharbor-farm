@@ -133,6 +133,35 @@ export async function signup(page, email, password, opts = {}) {
 }
 
 /**
+ * Step 2b: enable free models on the dashboard if the button is shown.
+ * Turbo reference: after signup, click "Enable free models" so the account
+ * gets its free model access instead of staying in the limited state.
+ * Returns true when the button existed and was clicked.
+ *
+ * @param {import('playwright').Page} page
+ */
+export async function enableFreeModels(page) {
+  const btn = page.getByRole("button", { name: /enable free models|free models/i }).first();
+  if (await btn.count().catch(() => 0)) {
+    await btn.click({ timeout: 5000 }).catch(() => {});
+    await sleep(800);
+    log.ok("free models enabled");
+    return true;
+  }
+  // fallback text selector (kalau role strict ngambek)
+  try {
+    const fb = page.locator("button:has-text('Enable free models')").first();
+    if (await fb.count()) {
+      await fb.click({ timeout: 5000 }).catch(() => {});
+      await sleep(800);
+      log.ok("free models enabled (text locator)");
+      return true;
+    }
+  } catch { /* nggak ada tombol — akun memang sudah free */ }
+  return false;
+}
+
+/**
  * Step 3: click "Verify email" on the dashboard.
  * Returns true if Token Harbor acknowledged the send.
  *
