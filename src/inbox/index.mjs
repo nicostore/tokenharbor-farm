@@ -493,9 +493,69 @@ export function createSuperMailReader(opts = {}) {
 }
 
 /**
+ * Reader for TempMailC private API (Kopeechka-2.0 style) — HTTP, no browser.
+ * Trial/free key = 100 requests total (hemat: create 1 request + poll).
+ *   GET {base}/api/v1/domains?code=X          -> {ok, domains:[...]}
+ *   GET {base}/api/v1/inbox?email=A&code=X    -> {status:"empty"} | messages
+ * Auth via header `Authorization: Bearer <code>`.
+ * Address is manually constructed `<random>@<domain>` (no create endpoint).
+ */
+export function createTempMailCReader(opts = {}) {
+  const BASE = opts.mailBaseUrl || "https://private.tempmailc.com";
+  const CODE = opts.inboxToken || "";
+  let address = null;
+  let domain = "";
+
+  if (!CODE) throw new Error("tempmailc requires inboxToken (trial code) — set worker.inboxToken di config.json");
+
+  async function jfetch(path) {
+    const r = await fetch(`${BASE}${path}`, {
+      headers: { Authorization: `Bearer ${CODE}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    const t = await r.text();
+    let j;
+    try { j = t ? JSON.parse(t) : null; } catch { j = t; }
+    if (!r.ok) throw new Error(`tempmailc api ${r.status} ${path}: ${typeof j === "string" ? j : JSON.stringify(j).slice(0, 120)}`);
+    return j;
+  }
+
+  return {
+    provider: "tempmailc",
+    async createInbox() {
+      const dj = await jfetch(`/api/v1/domains?code=${CODE}`);
+      const list = Array.isArray(dj?.domains) ? dj.domains : [];
+      if (!list.length) throw new Error(`tempmailc returned no domains: ${JSON.stringify(dj).slice(0, 120)}`);
+      domain = list[Math.floor(Math.random() * list.length)];
+      const local = `${Math.random().toString(36).slice(2, 12)}${Date.now().toString(36).slice(-4)}`;
+      address = `${local}@${domain}`;
+      log.info(`inbox ready: ${address} (tempmailc)`);
+      return { address, provider: "tempmailc" };
+    },
+    async waitForVerificationLink(_a, optsIn = {}) {
+      const timeout = optsIn.timeout ?? 240000;
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        try {
+          const j = await jfetch(`/api/v1/inbox?email=${encodeURIComponent(address)}&code=${CODE}`);
+          if (j && j.status && j.status !== "empty") {
+            const body = `${JSON.stringify(j)}`;   // ambil semua field (html/text/subject/data)
+            const link = extractVerificationLink(body);
+            if (link) return link;
+          }
+        } catch { /* transient — retry */ }
+        await sleep(3000);
+      }
+      throw new Error("timed out waiting for the Token Harbor verification email");
+    },
+    async close() { /* nothing to clean up */ },
+  };
+}
+
+/**
  * Factory used by the orchestrator.
  *
- * @param {string} name  "temp-email-dev" | "custom" | "tempmail-lol" | "mail-tm" | "guerrillamail" | "supermail" | "auto"
+ * @param {string} name  "temp-email-dev" | "custom" | "tempmail-lol" | "mail-tm" | "guerrillamail" | "supermail" | "tempmailc" | "auto"
  * @param {import('playwright').Page|null} page
  * @param {object} [opts]
  */
@@ -508,6 +568,7 @@ export function createInbox(name, page, opts = {}) {
   if (name === "mail-tm") return createMailTmReader(opts);
   if (name === "guerrillamail") return createGuerrillaMailReader(opts);
   if (name === "supermail") return createSuperMailReader(opts);
+  if (name === "tempmailc") return createTempMailCReader(opts);
   if (name === "auto") {
     // Pick a random HTTP provider per account for a fresh pool of domains.
     const r = Math.random();

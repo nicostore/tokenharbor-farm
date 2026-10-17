@@ -25,7 +25,8 @@ export const DEFAULTS = {
     count: 3,
     retriesPerAccount: 1,   // B: tiap retry = browser baru (full launch + swiftshader) — 1 retry cukup
     timeoutMs: 240000,
-    inboxProvider: "auto",   // auto | tempmail-lol | mail-tm | guerrillamail | temp-email-dev
+    inboxProvider: "auto",   // auto | tempmail-lol | mail-tm | guerrillamail | supermail | tempmailc | temp-email-dev
+    inboxToken: "",          // tempmailc trial code (100 request) — isi di config.json lokal, jangan di-commit
     hybridOff: false,        // false = verify+mint pakai IP bawaan (recommended)
   },
   output: {

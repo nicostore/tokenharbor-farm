@@ -171,6 +171,7 @@ async function main() {
 
         const r = await provisionOne(browser, {
           inboxProvider: cfg.worker.inboxProvider,
+          inboxToken: cfg.worker.inboxToken,
           timeout: cfg.worker.timeoutMs,
           retries: cfg.worker.retriesPerAccount,
           ...(proxy
