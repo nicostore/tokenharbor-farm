@@ -134,6 +134,11 @@ async function attempt(browser, opts, attemptNo) {
     await tokenharbor.signup(platformPage, email, password, opts);
     step("Submit Signup", "");
 
+    // 2a. Delay 2-5s setelah signup: biarin dashboard settle dulu biar tombol
+    //     "Enable free models" / "Not now" gak kelewat (kadang keluar telat).
+    const settle = 2000 + Math.floor(Math.random() * 3000);
+    await sleep(settle);
+
     // 2b. Enable free models (Turbo ref): jangan biarkan akun dapet plan terbatas.
     let freeModels = false;
     try {
