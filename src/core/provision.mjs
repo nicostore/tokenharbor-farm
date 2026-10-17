@@ -144,8 +144,12 @@ async function attempt(browser, opts, attemptNo) {
     let freeModels = false;
     try {
       freeModels = await tokenharbor.enableFreeModels(platformPage);
-      if (freeModels) step("Free Models ON", "");
+      if (freeModels) {
+        step("Free Models ON", "");
+        log.ok("✅ Enabled Free Models (stage 1: after signup)");
+      }
     } catch { /* non-blocking */ }
+    if (!freeModels) log.warn("Free Models belum enabled (stage 1) — akan dicoba lagi setelah verify");
 
     // 3. Ask for the verification email.
     step("Request Verify", "");
@@ -185,9 +189,12 @@ async function attempt(browser, opts, attemptNo) {
             if (await tokenharbor.enableFreeModels(directPage)) {
               freeModels = true;
               step("Free Models ON", "");
+              log.ok("✅ Enabled Free Models (stage 2: after verify)");
             }
           } catch { /* non-blocking */ }
         }
+        if (freeModels) log.ok("Free Models enabled ✅ (final)");
+        else log.warn("Free Models NOT enabled — tombol tidak muncul di tahap 1 & 2 (account mungkin sudah free default)");
         step("Create API KEY", "");
         const apiKey = await tokenharbor.createApiKey(directPage, keyName);
         step("GET API KEY", apiKey.slice(0, 16));
@@ -230,9 +237,12 @@ async function attempt(browser, opts, attemptNo) {
           if (await tokenharbor.enableFreeModels(fbPage)) {
             freeModels = true;
             step("Free Models ON", "");
+            log.ok("✅ Enabled Free Models (stage 2: after verify, via proxy)");
           }
         } catch { /* non-blocking */ }
       }
+      if (freeModels) log.ok("Free Models enabled ✅ (final)");
+      else log.warn("Free Models NOT enabled — tombol tidak muncul di tahap 1 & 2 (account mungkin sudah free default)");
       step("Create API KEY", "");
       const apiKey = await tokenharbor.createApiKey(fbPage, keyName);
       step("GET API KEY", apiKey.slice(0, 16));
