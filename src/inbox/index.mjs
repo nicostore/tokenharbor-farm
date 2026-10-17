@@ -553,9 +553,63 @@ export function createTempMailCReader(opts = {}) {
 }
 
 /**
+ * Reader untuk own-domain catch-all via Cloudflare Email Routing → D1 → Worker API.
+ * HTTP murni (tanpa browser): address manual di domain sendiri (kanichen.web.id),
+ * email masuk ke D1, link verify diambil dari /api/inbox. Domain sendiri = gak
+ * akan pernah farmed-out — ini jalur paling permanen.
+ *
+ *   GET {base}/api/new          -> { ok, address, domain }
+ *   GET {base}/api/inbox?email= -> { ok, list: [{to_address, from_address, subject, body, created_at}] }
+ *   GET {base}/api/domains      -> { ok, domains: [...] }
+ */
+export function createOwnDomainReader(opts = {}) {
+  const BASE = opts.mailBaseUrl || "https://tg-mail-worker.kanichen-grok.workers.dev";
+  const DOMAIN = opts.mailboxDomain || "kanichen.web.id";
+  let address = null;
+
+  async function jfetch(path) {
+    const r = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(15000) });
+    const t = await r.text();
+    let j;
+    try { j = t ? JSON.parse(t) : null; } catch { j = t; }
+    if (!r.ok) throw new Error(`cf-mail api ${r.status} ${path}: ${typeof j === "string" ? j : JSON.stringify(j).slice(0, 120)}`);
+    return j;
+  }
+
+  return {
+    provider: "cf-mail",
+    async createInbox() {
+      // Address manual di domain sendiri — catch-all => semua email masuk D1.
+      const local = `${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-3)}`;
+      address = `${local}@${DOMAIN}`;
+      log.info(`inbox ready: ${address} (cf-mail own domain)`);
+      return { address, provider: "cf-mail" };
+    },
+    async waitForVerificationLink(_a, optsIn = {}) {
+      const timeout = optsIn.timeout ?? 240000;
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        try {
+          const j = await jfetch(`/api/inbox?email=${encodeURIComponent(address)}`);
+          const list = Array.isArray(j?.list) ? j.list : [];
+          if (list.length) {
+            const body = list.map((m) => `${m.subject || ""} ${m.body || ""} ${JSON.stringify(m)}`).join("\n");
+            const link = extractVerificationLink(body);
+            if (link) return link;
+          }
+        } catch { /* transient — retry */ }
+        await sleep(3000);
+      }
+      throw new Error("timed out waiting for the Token Harbor verification email");
+    },
+    async close() { /* nothing to clean up */ },
+  };
+}
+
+/**
  * Factory used by the orchestrator.
  *
- * @param {string} name  "temp-email-dev" | "custom" | "tempmail-lol" | "mail-tm" | "guerrillamail" | "supermail" | "tempmailc" | "auto"
+ * @param {string} name  "temp-email-dev" | "custom" | "tempmail-lol" | "mail-tm" | "guerrillamail" | "supermail" | "tempmailc" | "cf-mail" | "auto"
  * @param {import('playwright').Page|null} page
  * @param {object} [opts]
  */
@@ -569,15 +623,18 @@ export function createInbox(name, page, opts = {}) {
   if (name === "guerrillamail") return createGuerrillaMailReader(opts);
   if (name === "supermail") return createSuperMailReader(opts);
   if (name === "tempmailc") return createTempMailCReader(opts);
+  if (name === "cf-mail") return createOwnDomainReader(opts);
   if (name === "auto") {
-    // Pick a random HTTP provider per account for a fresh pool of domains.
+    // Own-domain CF paling permanen — kasih slot terbesar; sisanya rotasi.
     const r = Math.random();
     let pick;
-    if (r < 0.35) pick = "tempmail-lol";
-    else if (r < 0.6) pick = "mail-tm";
-    else if (r < 0.8) pick = "guerrillamail";
+    if (r < 0.35) pick = "cf-mail";
+    else if (r < 0.55) pick = "tempmail-lol";
+    else if (r < 0.72) pick = "mail-tm";
+    else if (r < 0.86) pick = "guerrillamail";
     else pick = "supermail";
     log.info(`inbox auto -> ${pick}`);
+    if (pick === "cf-mail") return createOwnDomainReader(opts);
     if (pick === "tempmail-lol") return createTempMailLolReader(opts);
     if (pick === "mail-tm") return createMailTmReader(opts);
     if (pick === "supermail") return createSuperMailReader(opts);
