@@ -52,6 +52,7 @@ function scheduleRender() {
 let cfg = loadConfig();
 let farm = null;
 let farmBusy = false;
+let farmStartedAt = 0;
 
 let mode = "menu";       // menu | prompt | dashboard
 let promptField = null;  // key PROMPTS
@@ -211,6 +212,36 @@ function countKeys() {
   } catch { return 0; }
 }
 
+function countBanned() {
+  try {
+    const p = resolve(ROOT, cfg.proxy.file.replace(/\.txt$/, "") + "-banned.txt");
+    if (!existsSync(p)) return 0;
+    return readFileSync(p, "utf8").split(/\r?\n/).filter((l) => l.trim() && !l.startsWith("#")).length;
+  } catch { return 0; }
+}
+
+function countCooldown() {
+  try {
+    const p = resolve(ROOT, cfg.proxy.file.replace(/\.txt$/, "") + "-cooldown.txt");
+    if (!existsSync(p)) return 0;
+    const now = Date.now();
+    return readFileSync(p, "utf8")
+      .split(/\r?\n/)
+      .filter((l) => {
+        if (!l.trim()) return false;
+        const until = Number((l.split("#").pop() || "").trim() || 0);
+        return until > now;
+      }).length;
+  } catch { return 0; }
+}
+
+function fmtDur(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m${String(s % 60).padStart(2, "0")}s`;
+}
+
 function banner() {
   return C.bold + "🛰 TOKENHARBOR-FARM" + C.reset + C.dim + " v1.0.0" + C.reset;
 }
@@ -324,18 +355,30 @@ function renderDashboard() {
   const wStep = Math.max(10, Math.floor(W * 0.20));
   const wNote = Math.max(8, W - (4 + 3 + wIp + 3 + wStep + 3 + 8 + 1));
   const wTime = 8;
-  let s = banner() + "\n\n";
   const tgt = cfg.rotateip.target || "∞";
-  s += C.bold + `Success Apikey ${keys}/${tgt}` + C.reset + C.dim + `  ·  ` + (farmBusy ? C.green + "RUNNING" : C.yellow + "IDLE") + C.reset + "\n\n";
+  const elapsed = farmStartedAt ? Date.now() - farmStartedAt : 0;
+  const rate = elapsed > 5000 ? ((keys / elapsed) * 3600000).toFixed(0) : "-";
+  const banned = countBanned();
+  const cool = countCooldown();
+  const done = [...workerRows.values()].filter((r) => r.status === "done").length;
+  const alive = [...workerRows.values()].filter((r) => r.status === "work").length;
+
+  let s = banner() + "\n\n";
+  // Bar statistik (responsif): rate/jam, durasi, banned, cooldown, provider
+  const statPad = Math.max(termWidth() - 4, 30);
+  s += `  ${C.bold}🔑 ${keys}/${tgt}${C.reset}  ${C.green}▲ ${rate}/jam${C.reset}  ${C.dim}${fmtDur(elapsed)}${C.reset}`;
+  s += `  ${C.red}🚫 ${banned}${C.reset}  ${C.yellow}⏳ ${cool}${C.reset}`;
+  s += `  ${C.cyan}▸ ${cfg.worker.inboxProvider}${C.reset}  ` + (farmBusy ? C.green + "● RUNNING" : C.yellow + "○ IDLE") + C.reset + "\n";
+  s += `  ${C.dim}${"─".repeat(statPad)}${C.reset}\n`;
   // Tabel live per worker (responsif)
-  s += `${C.bold}${pad("Worker", 4)}   ${pad("IP", wIp)} ${pad("Event", wStep)} ${pad("Note", wNote)} ${pad("Time", wTime)}${C.reset}\n`;
+  s += `${C.bold}${pad("W", 2)}   ${pad("IP", wIp)} ${pad("Event", wStep)} ${pad("Note", wNote)} ${pad("Time", wTime)}  ${C.dim}${alive} hidup / ${done} selesai${C.reset}\n`;
   s += sep() + "\n";
   const ws = [...workerRows.keys()].sort((a, b) => a - b);
   if (!ws.length) s += C.gray + "  (menunggu worker…)" + C.reset + "\n";
   for (const wid of ws) {
     const r = workerRows.get(wid);
     const color = r.status === "done" ? C.green : r.status === "fail" ? C.red : r.status === "idle" ? C.gray : C.cyan;
-    s += `${pad(wid, 4)}   ${pad(trunc(r.ip || "...", wIp), wIp)} ${color}${pad(trunc(r.step, wStep), wStep)}${C.reset} ${pad(trunc(r.note || "", wNote), wNote)} ${pad(fmtElapsed(r.since), wTime)}\n`;
+    s += `${pad(wid, 2)}   ${pad(trunc(r.ip || "...", wIp), wIp)} ${color}${pad(trunc(r.step, wStep), wStep)}${C.reset} ${pad(trunc(r.note || "", wNote), wNote)} ${pad(fmtElapsed(r.since), wTime)}\n`;
   }
   s += "\n" + C.gray + "[s] stop   [q] keluar" + C.reset;
   process.stdout.write(s + "\n");
@@ -346,6 +389,7 @@ function renderDashboard() {
 async function startFarm() {
   if (farmBusy) return;
   farmBusy = true;
+  farmStartedAt = Date.now();
   mode = "dashboard";
   events.length = 0;
   clearLogsOnStart();
