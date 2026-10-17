@@ -177,6 +177,17 @@ async function attempt(browser, opts, attemptNo) {
         step("Verify Email (IP bawaan)", link.slice(0, 40));
         await tokenharbor.openVerificationLink(directPage, link);
         step("Email Verified", "");
+        // Free models stage-2: kalo belum ON setelah signup, coba lagi sekarang
+        // (tombol bisa muncul belakangan setelah email verified).
+        if (!freeModels) {
+          await sleep(2500);   // dashboard pasca-verify butuh render dulu
+          try {
+            if (await tokenharbor.enableFreeModels(directPage)) {
+              freeModels = true;
+              step("Free Models ON", "");
+            }
+          } catch { /* non-blocking */ }
+        }
         step("Create API KEY", "");
         const apiKey = await tokenharbor.createApiKey(directPage, keyName);
         step("GET API KEY", apiKey.slice(0, 16));
@@ -212,6 +223,16 @@ async function attempt(browser, opts, attemptNo) {
     try {
       step("Email Verified", "");
       await tokenharbor.openVerificationLink(fbPage, link);
+      // Free models stage-2 (jalur fallback proxy) — sama kayak hybrid.
+      if (!freeModels) {
+        await sleep(2500);
+        try {
+          if (await tokenharbor.enableFreeModels(fbPage)) {
+            freeModels = true;
+            step("Free Models ON", "");
+          }
+        } catch { /* non-blocking */ }
+      }
       step("Create API KEY", "");
       const apiKey = await tokenharbor.createApiKey(fbPage, keyName);
       step("GET API KEY", apiKey.slice(0, 16));
