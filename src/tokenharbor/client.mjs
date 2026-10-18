@@ -136,28 +136,44 @@ export async function signup(page, email, password, opts = {}) {
  * Step 2b: enable free models on the dashboard if the button is shown.
  * Turbo reference: after signup, click "Enable free models" so the account
  * gets its free model access instead of staying in the limited state.
- * Returns true when the button existed and was clicked.
+ * Returns true ONLY when the click landed AND the button state changed
+ * (button gone or disabled) — a swallowed click error must not report success.
  *
  * @param {import('playwright').Page} page
  */
 export async function enableFreeModels(page) {
-  const btn = page.getByRole("button", { name: /enable free models|free models/i }).first();
-  if (await btn.count().catch(() => 0)) {
-    await btn.click({ timeout: 5000 }).catch(() => {});
-    await sleep(800);
-    log.ok("free models enabled");
-    return true;
-  }
-  // fallback text selector (kalau role strict ngambek)
-  try {
-    const fb = page.locator("button:has-text('Enable free models')").first();
-    if (await fb.count()) {
-      await fb.click({ timeout: 5000 }).catch(() => {});
-      await sleep(800);
-      log.ok("free models enabled (text locator)");
-      return true;
+  // Cuma tombol aksi "Enable free models" — JANGAN match "free models" doang
+  // (card plan/badge lain ikut ke-klik dan dianggap sukses).
+  const candidates = [
+    page.getByRole("button", { name: "Enable free models", exact: true }),
+    page.getByRole("button", { name: /^enable free models$/i }),
+    page.locator("button:has-text('Enable free models')").first(),
+  ];
+  for (const btn of candidates) {
+    try {
+      if (!(await btn.count().catch(() => 0))) continue;
+      // Tombol sudah disabled = free models memang sudah ON — lapor sukses.
+      if (await btn.isDisabled().catch(() => false)) {
+        log.ok("free models sudah enabled (tombol disabled)");
+        return true;
+      }
+      await btn.click({ timeout: 5000 }); // jangan .catch — kegagalan = return false
+      await sleep(1200);
+      // Verifikasi state berubah: tombol hilang ATAU jadi disabled.
+      const after = await btn.count().catch(() => 0);
+      const nowDisabled = after ? await btn.isDisabled().catch(() => false) : false;
+      if (!after || nowDisabled) {
+        log.ok("free models enabled ✅ (terverifikasi)");
+        return true;
+      }
+      log.warn("free models: klik sukses tapi state tombol belum berubah — tidak dianggap enabled");
+      return false;
+    } catch (e) {
+      log.warn(`free models: klik gagal — ${String(e.message || e).slice(0, 120)}`);
+      return false;
     }
-  } catch { /* nggak ada tombol — akun memang sudah free */ }
+  }
+  // nggak ada tombol — akun memang sudah free / tombol nggak muncul.
   return false;
 }
 
