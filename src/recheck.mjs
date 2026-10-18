@@ -105,8 +105,64 @@ function toProxy(proxyStr) {
   return { server, username: username || undefined, password: password || undefined };
 }
 
-async function recheckOne(browser, rec) {
-  const proxyCfg = rec.proxy ? toProxy(rec.proxy) : null;
+// ---- pool proxy (sama kayak signup: pools/proxies.txt + banned/cooldown) ----
+function loadPool(cfg) {
+  const pf = abs(cfg.proxy.file);
+  if (!existsSync(pf)) return [];
+  return readFileSync(pf, "utf8")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"));
+}
+function loadExcluded(cfg) {
+  const base = cfg.proxy.file.replace(/\.txt$/, "");
+  const banned = new Set();
+  const cooldown = new Map();
+  try {
+    for (const l of readFileSync(abs(base + "-banned.txt"), "utf8").split(/\r?\n/)) {
+      const s = l.trim();
+      if (s && !s.startsWith("#")) banned.add(s.split(" ")[0]);
+    }
+  } catch { /* belum ada */ }
+  try {
+    for (const l of readFileSync(abs(base + "-cooldown.txt"), "utf8").split(/\r?\n/)) {
+      const [server, rest] = l.trim().split(/\s+#\s*/);
+      if (!server) continue;
+      const until = Number((rest || "").split(" ").pop() || 0);
+      if (until > Date.now()) cooldown.set(server, until);
+    }
+  } catch { /* belum ada */ }
+  return { banned, cooldown };
+}
+
+// Pool picker global: round-robin, skip banned + cooldown (file dibaca ulang tiap 5 panggilan).
+let poolIdx = 0;
+const makePoolPicker = (cfg) => {
+  const pool = loadPool(cfg);
+  let excl = loadExcluded(cfg);
+  let calls = 0;
+  return {
+    poolSize: pool.length,
+    next() {
+      if (!cfg.proxy.enabled || !pool.length) return null;
+      if (++calls % 5 === 0) excl = loadExcluded(cfg);
+      for (let tries = 0; tries < pool.length * 2; tries++) {
+        const p = pool[poolIdx % pool.length];
+        poolIdx++;
+        if (excl.banned.has(p)) continue;
+        const until = excl.cooldown.get(p);
+        if (until && until > Date.now()) continue;
+        return p;
+      }
+      return null;
+    },
+  };
+};
+
+async function recheckOne(browser, rec, pool) {
+  // Proxy dari POOL aja (sama kayak signup): pools/proxies.txt round-robin.
+  const poolProxy = pool ? pool.next() : null;
+  const proxyCfg = poolProxy ? { src: poolProxy, toPlaywright: toProxy(poolProxy) } : null;
   const baseOpts = {
     viewport: { width: 800, height: 600 },
     reducedMotion: "reduce",
@@ -138,14 +194,20 @@ async function recheckOne(browser, rec) {
     }
   };
 
-  // 1) coba via proxy record; 2) kalau gagal (timeout/auth), fallback IP bawaan.
+  // 1) coba via pool; 2) kalau gagal (timeout/auth), fallback IP bawaan.
   let attempt = null;
   let viaProxy = false;
-  try {
-    attempt = await tryWith(proxyCfg);
-    viaProxy = true;
-  } catch (proxyErr) {
-    log.warn(`${rec.email}: proxy gagal (${String(proxyErr.message || proxyErr).slice(0, 80)}) — fallback IP bawaan`);
+  let viaPool = false;
+  if (proxyCfg) {
+    try {
+      attempt = await tryWith(proxyCfg.toPlaywright);
+      viaProxy = true;
+      viaPool = true;
+    } catch (proxyErr) {
+      log.warn(`${rec.email}: proxy ${proxyCfg.src} gagal (${String(proxyErr.message || proxyErr).slice(0, 80)}) — fallback IP bawaan`);
+      attempt = await tryWith(null);
+    }
+  } else {
     attempt = await tryWith(null);
   }
   const { page, ctx, quota } = attempt;
@@ -154,10 +216,10 @@ async function recheckOne(browser, rec) {
     const enabled = await enableFreeModels(page);
     if (enabled && !wasFree) {
       rec.free_models = true;
-      return { status: "fixed", rec, quota, viaProxy };
+      return { status: "fixed", rec, quota, viaProxy, viaPool };
     }
-    if (enabled && wasFree) return { status: "already", rec, quota, viaProxy };
-    return { status: wasFree ? "already" : "absent", rec, quota, viaProxy }; // tombol tak muncul = sudah free
+    if (enabled && wasFree) return { status: "already", rec, quota, viaProxy, viaPool };
+    return { status: wasFree ? "already" : "absent", rec, quota, viaProxy, viaPool }; // tombol tak muncul = sudah free
   } finally {
     await ctx.close().catch(() => {});
   }
@@ -175,6 +237,8 @@ async function main() {
   console.log(`Recheck ${accounts.length} akun (${workers} worker paralel) — file: ${abs(cfg.output.accountsFile)}\n`);
 
   const browser = await launchBrowser();
+  const pool = makePoolPicker(cfg);
+  if (pool.poolSize) log.info(`pool: ${pool.poolSize} proxy (${cfg.proxy.file})`);
   const results = [];
   let i = 0;
   const next = async () => {
@@ -182,10 +246,10 @@ async function main() {
       const idx = i++;
       const rec = accounts[idx];
       try {
-        const r = await recheckOne(browser, rec);
+        const r = await recheckOne(browser, rec, pool);
         results.push({ idx, ...r });
         const icon = r.status === "fixed" ? "✅ FIXED" : r.status === "already" ? "✔ sudah" : "○ absent";
-        const via = r.viaProxy ? "via proxy" : "IP bawaan";
+        const via = r.viaProxy ? "via pool" : "IP bawaan";
         const q = r.quota;
         const qs = q
           ? `quota ${q.req_used ?? "?"} req (${q.used_pct ?? "?"}%), reset ${(q.reset_at || "?").slice(0, 10)}${q.exhausted ? " ⚠ EXHAUSTED" : ""}`
