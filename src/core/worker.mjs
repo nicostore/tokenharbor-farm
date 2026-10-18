@@ -206,7 +206,9 @@ async function main() {
           });
           OUT.log(`✅ KEY: ${r.api_key.slice(0, 24)}… via ${r.proxy}${r.free_models ? " (free models)" : ""}`);
         } else {
-          if (r.error_kind === "rate-limit" && proxy) markProxyFail(proxy, r.error);
+          // rate-limit sudah di-mark oleh onProxyFail di dalam provision
+          // (attempt() -> opts.onProxyFail) — jangan mark dobel di sini,
+          // biar fail-count proxy nggak cepat naik & ke-ban lebih awal.
           OUT.emit("attempt-fail", { worker: wid, kind: r.error_kind, proxy: r.proxy });
           OUT.log(`✘ ${r.error_kind}: ${(r.error || "").slice(0, 100)}`);
         }

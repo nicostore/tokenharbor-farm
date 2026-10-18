@@ -229,10 +229,20 @@ function countCooldown() {
       .split(/\r?\n/)
       .filter((l) => {
         if (!l.trim()) return false;
-        const until = Number((l.split("#").pop() || "").trim() || 0);
+        // Format baris: "proxy  # soft <ts>" / "proxy  # rate <ts>" — ambil ANGKA terakhir.
+        const m = l.match(/(\d{10,})/);
+        if (!m) return false;
+        const until = Number(m[1]);
         return until > now;
       }).length;
   } catch { return 0; }
+}
+
+/** Sisa pool yang masih bisa dipakai = total - banned - cooldown aktif. */
+function poolAlive() {
+  const total = poolCount();
+  if (!total) return 0;
+  return Math.max(0, total - countBanned() - countCooldown());
 }
 
 function fmtDur(ms) {
@@ -358,16 +368,18 @@ function renderDashboard() {
   const tgt = cfg.rotateip.target || "∞";
   const elapsed = farmStartedAt ? Date.now() - farmStartedAt : 0;
   const rate = elapsed > 5000 ? ((keys / elapsed) * 3600000).toFixed(0) : "-";
-  const banned = countBanned();
-  const cool = countCooldown();
   const done = [...workerRows.values()].filter((r) => r.status === "done").length;
   const alive = [...workerRows.values()].filter((r) => r.status === "work").length;
 
   let s = banner() + "\n\n";
-  // Bar statistik (responsif): rate/jam, durasi, banned, cooldown, provider
+  // Bar statistik (responsif): keys, rate/jam, durasi, pool status, provider
   const statPad = Math.max(termWidth() - 4, 30);
+  const pTotal = poolCount();
+  const pAlive = poolAlive();
+  const pBan = countBanned();
+  const pCool = countCooldown();
   s += `  ${C.bold}🔑 ${keys}/${tgt}${C.reset}  ${C.green}▲ ${rate}/jam${C.reset}  ${C.dim}${fmtDur(elapsed)}${C.reset}`;
-  s += `  ${C.red}🚫 ${banned}${C.reset}  ${C.yellow}⏳ ${cool}${C.reset}`;
+  s += `  ${C.gray}🗂 ${pTotal}${C.reset}` + (pTotal ? ` ${C.green}🟢 ${pAlive}${C.reset}` : "") + ` ${C.red}🚫 ${pBan}${C.reset}  ${C.yellow}⏳ ${pCool}${C.reset}`;
   s += `  ${C.cyan}▸ ${cfg.worker.inboxProvider}${C.reset}  ` + (farmBusy ? C.green + "● RUNNING" : C.yellow + "○ IDLE") + C.reset + "\n";
   s += `  ${C.dim}${"─".repeat(statPad)}${C.reset}\n`;
   // Tabel live per worker (responsif)
@@ -425,7 +437,8 @@ process.on("exit", () => {
   process.stdout.write(LEAVE_ALT);
 });
 // Resize window -> UI langsung menyesuaikan lebar kolom (no restart).
-process.stdout.on("resize", () => { if (mode !== "dashboard" || farmBusy) render(); });
+// scheduleRender, bukan render langsung, biar coalesce 60ms tetap bekerja.
+process.stdout.on("resize", () => scheduleRender());
 render();
 // tick ringan 1s: cuma nge-schedule kalau dashboard (elapsed time jalan);
 // render tetap di-coalesce 60ms, nggak redraw penuh terus.

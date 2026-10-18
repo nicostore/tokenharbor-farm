@@ -172,35 +172,90 @@ async function attempt(browser, opts, attemptNo) {
     log.info("verification link received");
     step("Link Received", link.slice(0, 40));
 
-    // 4b. HYBRID: verify + mint the key from the machine's own IP.
-    //     Carry the signup session cookies into a no-proxy context.
-    if (opts.directContextFactory && pick) {
-      try {
-        directContext = await opts.directContextFactory(storage);
-        const directPage = await directContext.newPage();
+    // ===== Verify + mint: BISA DI-RETRY dari storage yang sama =====
+    // Fase ini TIDAK pakai proxy (hybrid: IP bawaan) — network error transien
+    // di sini BUKAN salah proxy. Retry langsung dari cookies, tanpa signup
+    // ulang, tanpa ganti proxy. Total 3 percobaan (1 utama + 2 retry).
+    const verifyAndMint = async (round) => {
+      if (round > 0) {
+        log.warn(`verify+mint retry ${round}/2 (storage sama, tanpa ganti proxy)`);
         step("Verify Email (IP bawaan)", link.slice(0, 40));
-        await tokenharbor.openVerificationLink(directPage, link);
+      }
+      // 4b. HYBRID: verify + mint the key from the machine's own IP.
+      //     Carry the signup session cookies into a no-proxy context.
+      if (opts.directContextFactory && pick) {
+        try {
+          directContext = await opts.directContextFactory(storage);
+          const directPage = await directContext.newPage();
+          step("Verify Email (IP bawaan)", link.slice(0, 40));
+          await tokenharbor.openVerificationLink(directPage, link);
+          step("Email Verified", "");
+          // Free models stage-2: kalo belum ON setelah signup, coba lagi sekarang
+          // (tombol bisa muncul belakangan setelah email verified).
+          if (!freeModels) {
+            await sleep(2500);   // dashboard pasca-verify butuh render dulu
+            try {
+              if (await tokenharbor.enableFreeModels(directPage)) {
+                freeModels = true;
+                step("Free Models ON", "");
+                log.ok("✅ Enabled Free Models (stage 2: after verify)");
+              }
+            } catch { /* non-blocking */ }
+          }
+          if (freeModels) log.ok("Free Models enabled ✅ (final)");
+          else log.warn("Free Models NOT enabled — tombol tidak muncul di tahap 1 & 2 (account mungkin sudah free default)");
+          step("Create API KEY", "");
+          const apiKey = await tokenharbor.createApiKey(directPage, keyName);
+          step("GET API KEY", apiKey.slice(0, 16));
+          await directContext.close().catch(() => {});
+          directContext = null;
+          log.ok(`hybrid finish di IP bawaan — key=${keyName}`);
+          return {
+            ok: true,
+            email,
+            password,
+            api_key: apiKey,
+            key_name: keyName,
+            api_base: "https://tokenharbor.ai/v1",
+            email_provider: created.provider,
+            proxy: pick.server,
+            hybrid: true,
+            free_models: freeModels,
+            elapsed_ms: Date.now() - started,
+            created_at: new Date().toISOString(),
+          };
+        } catch (err) {
+          await directContext?.close().catch(() => {});
+          directContext = null;
+          log.warn(`hybrid finish gagal (${String(err.message || err).slice(0, 90)}) — fallback verify di proxy`);
+        }
+      }
+
+      // 4c. Fallback: verify + mint — context BARU dari cookies tersimpan (yang
+      //     lama sudah ditutup di fase A). Pakai proxy bila ada (perilaku lama).
+      const fbContext = await browser.newContext({ ...ctxOpts, storageState: storage });
+      leanRoutes(fbContext);
+      const fbPage = await fbContext.newPage();
+      try {
         step("Email Verified", "");
-        // Free models stage-2: kalo belum ON setelah signup, coba lagi sekarang
-        // (tombol bisa muncul belakangan setelah email verified).
+        await tokenharbor.openVerificationLink(fbPage, link);
+        // Free models stage-2 (jalur fallback proxy) — sama kayak hybrid.
         if (!freeModels) {
-          await sleep(2500);   // dashboard pasca-verify butuh render dulu
+          await sleep(2500);
           try {
-            if (await tokenharbor.enableFreeModels(directPage)) {
+            if (await tokenharbor.enableFreeModels(fbPage)) {
               freeModels = true;
               step("Free Models ON", "");
-              log.ok("✅ Enabled Free Models (stage 2: after verify)");
+              log.ok("✅ Enabled Free Models (stage 2: after verify, via proxy)");
             }
           } catch { /* non-blocking */ }
         }
         if (freeModels) log.ok("Free Models enabled ✅ (final)");
         else log.warn("Free Models NOT enabled — tombol tidak muncul di tahap 1 & 2 (account mungkin sudah free default)");
         step("Create API KEY", "");
-        const apiKey = await tokenharbor.createApiKey(directPage, keyName);
+        const apiKey = await tokenharbor.createApiKey(fbPage, keyName);
         step("GET API KEY", apiKey.slice(0, 16));
-        await directContext.close().catch(() => {});
-        directContext = null;
-        log.ok(`hybrid finish di IP bawaan — key=${keyName}`);
+
         return {
           ok: true,
           email,
@@ -209,61 +264,35 @@ async function attempt(browser, opts, attemptNo) {
           key_name: keyName,
           api_base: "https://tokenharbor.ai/v1",
           email_provider: created.provider,
-          proxy: pick.server,
-          hybrid: true,
+          proxy: pick ? pick.server : "(direct)",
+          hybrid: false,
           free_models: freeModels,
           elapsed_ms: Date.now() - started,
           created_at: new Date().toISOString(),
         };
+      } finally {
+        await fbContext.close().catch(() => {});
+      }
+    };
+
+    // Loop retry verify+mint: network/timeout transien di fase ini bukan salah
+    // proxy — ulangi dari cookies yang sama. Rate-limit/email-taken langsung stop.
+    let lastVerifyErr = null;
+    for (let round = 0; round <= 2; round++) {
+      try {
+        return await verifyAndMint(round);
       } catch (err) {
-        await directContext?.close().catch(() => {});
-        directContext = null;
-        log.warn(`hybrid finish gagal (${err.message.slice(0, 90)}) — fallback verify di proxy`);
+        lastVerifyErr = err;
+        const k = classify(err);
+        if (k === "rate-limit" || k === "email-taken" || k === "mail-timeout") throw err;
+        if (round < 2) {
+          const backoff = 3000 * (round + 1);
+          log.warn(`verify gagal (${k}: ${String(err.message || err).slice(0, 90)}) — retry ${round + 1}/2 dalam ${backoff}ms`);
+          await sleep(backoff);
+        }
       }
     }
-
-    // 4c. Fallback: verify + mint — context BARU dari cookies tersimpan (yang
-    //     lama sudah ditutup di fase A). Pakai proxy bila ada (perilaku lama).
-    const fbContext = await browser.newContext({ ...ctxOpts, storageState: storage });
-    leanRoutes(fbContext);
-    const fbPage = await fbContext.newPage();
-    try {
-      step("Email Verified", "");
-      await tokenharbor.openVerificationLink(fbPage, link);
-      // Free models stage-2 (jalur fallback proxy) — sama kayak hybrid.
-      if (!freeModels) {
-        await sleep(2500);
-        try {
-          if (await tokenharbor.enableFreeModels(fbPage)) {
-            freeModels = true;
-            step("Free Models ON", "");
-            log.ok("✅ Enabled Free Models (stage 2: after verify, via proxy)");
-          }
-        } catch { /* non-blocking */ }
-      }
-      if (freeModels) log.ok("Free Models enabled ✅ (final)");
-      else log.warn("Free Models NOT enabled — tombol tidak muncul di tahap 1 & 2 (account mungkin sudah free default)");
-      step("Create API KEY", "");
-      const apiKey = await tokenharbor.createApiKey(fbPage, keyName);
-      step("GET API KEY", apiKey.slice(0, 16));
-
-      return {
-        ok: true,
-        email,
-        password,
-        api_key: apiKey,
-        key_name: keyName,
-        api_base: "https://tokenharbor.ai/v1",
-        email_provider: created.provider,
-        proxy: pick ? pick.server : "(direct)",
-        hybrid: false,
-        free_models: freeModels,
-        elapsed_ms: Date.now() - started,
-        created_at: new Date().toISOString(),
-      };
-    } finally {
-      await fbContext.close().catch(() => {});
-    }
+    throw lastVerifyErr;
   } catch (err) {
     const kind = classify(err);
     // Ban hook: tell the caller this proxy is burnt so it is never reused.
