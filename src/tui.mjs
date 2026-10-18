@@ -334,8 +334,19 @@ function setWorkerStep(ev) {
   } else if (ev.type === "worker-done") {
     row.step = "Selesai";
     row.status = "idle";
+  } else if (ev.type === "alive") {
+    // Heartbeat worker — bukti worker masih hidup; kalau ini nggak datang
+    // > 120s, render() nandain row sebagai HANG (lihat fmtHang).
+    row.lastAlive = ev.ts || Date.now();
   }
   workerRows.set(wid, row);
+}
+
+/** Cek worker hang: nggak ngirim event apa pun > 120s (heartbeat/step). */
+function isHung(row) {
+  if (row.status !== "work") return false;
+  const last = row.lastAlive || row.since;
+  return last && Date.now() - last > 120000;
 }
 
 function fmtElapsed(ms) {
@@ -369,7 +380,8 @@ function renderDashboard() {
   const elapsed = farmStartedAt ? Date.now() - farmStartedAt : 0;
   const rate = elapsed > 5000 ? ((keys / elapsed) * 3600000).toFixed(0) : "-";
   const done = [...workerRows.values()].filter((r) => r.status === "done").length;
-  const alive = [...workerRows.values()].filter((r) => r.status === "work").length;
+  const alive = [...workerRows.values()].filter((r) => r.status === "work" && !isHung(r)).length;
+  const hung = [...workerRows.values()].filter((r) => r.status === "work" && isHung(r)).length;
 
   let s = banner() + "\n\n";
   // Bar statistik (responsif): keys, rate/jam, durasi, pool status, provider
@@ -383,14 +395,17 @@ function renderDashboard() {
   s += `  ${C.cyan}▸ ${cfg.worker.inboxProvider}${C.reset}  ` + (farmBusy ? C.green + "● RUNNING" : C.yellow + "○ IDLE") + C.reset + "\n";
   s += `  ${C.dim}${"─".repeat(statPad)}${C.reset}\n`;
   // Tabel live per worker (responsif)
-  s += `${C.bold}${pad("W", 2)}   ${pad("IP", wIp)} ${pad("Event", wStep)} ${pad("Note", wNote)} ${pad("Time", wTime)}  ${C.dim}${alive} hidup / ${done} selesai${C.reset}\n`;
+  s += `${C.bold}${pad("W", 2)}   ${pad("IP", wIp)} ${pad("Event", wStep)} ${pad("Note", wNote)} ${pad("Time", wTime)}  ${C.dim}${alive} hidup / ${done} selesai${hung ? C.red + ` / ${hung} hang` : ""}${C.reset}\n`;
   s += sep() + "\n";
   const ws = [...workerRows.keys()].sort((a, b) => a - b);
   if (!ws.length) s += C.gray + "  (menunggu worker…)" + C.reset + "\n";
   for (const wid of ws) {
     const r = workerRows.get(wid);
-    const color = r.status === "done" ? C.green : r.status === "fail" ? C.red : r.status === "idle" ? C.gray : C.cyan;
-    s += `${pad(wid, 2)}   ${pad(trunc(r.ip || "...", wIp), wIp)} ${color}${pad(trunc(r.step, wStep), wStep)}${C.reset} ${pad(trunc(r.note || "", wNote), wNote)} ${pad(fmtElapsed(r.since), wTime)}\n`;
+    const hungRow = isHung(r);
+    const color = r.status === "done" ? C.green : r.status === "fail" ? C.red : hungRow ? C.red : r.status === "idle" ? C.gray : C.cyan;
+    const stepTxt = hungRow ? "⚠ HANG" : r.step;
+    const timeTxt = hungRow ? ">2m" : fmtElapsed(r.since);
+    s += `${pad(wid, 2)}   ${pad(trunc(r.ip || "...", wIp), wIp)} ${color}${pad(trunc(stepTxt, wStep), wStep)}${C.reset} ${pad(trunc(r.note || "", wNote), wNote)} ${pad(timeTxt, wTime)}\n`;
   }
   s += "\n" + C.gray + "[s] stop   [q] keluar" + C.reset;
   process.stdout.write(s + "\n");

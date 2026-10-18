@@ -238,7 +238,11 @@ export async function requestVerificationEmail(page) {
   // daripada klik UI). Kalau gagal, fallback ke interaksi UI di bawah.
   const sent = await page
     .evaluate(() =>
-      fetch("/api/me/send-verification-email", { method: "POST", credentials: "include" })
+      fetch("/api/me/send-verification-email", {
+        method: "POST",
+        credentials: "include",
+        signal: AbortSignal.timeout(20000),
+      })
         .then((r) => r.ok)
         .catch(() => false)
     )

@@ -61,6 +61,11 @@ function loadCooldowns() {
 
 const target = Number(process.env.TH_TARGET || 0);
 
+// Hard timeout per attempt: kalau ada await yang hang (proxy macet, page nggak
+// settle, browser beku), worker TIDAK boleh diam selamanya di step yang sama.
+// Default 9 menit — cukup buat signup + tunggu email (timeoutMs=4m) + verify.
+const attemptTimeoutMs = Number(process.env.TH_ATTEMPT_TIMEOUT || 540000);
+
 // ---- proxy picker (global-ish: baca banned/cooldown tiap manggil, biar lintas worker sinkron) ----
 let idx = 0;
 function pickProxy() {
@@ -111,6 +116,10 @@ function countFail(proxy) {
     return t.split(/\r?\n/).filter((l) => l.startsWith(proxy + "  # rate")).length;
   } catch { return 0; }
 }
+
+// Heartbeat: bukti worker masih hidup — TUI pakai ini buat deteksi HANG
+// (worker yang nggak ngirim apa pun > 120s = beku, ditandai merah).
+const heartbeat = setInterval(() => OUT.emit("alive", { worker: wid }), 30000);
 
 // ---- main loop ----
 async function main() {
@@ -169,29 +178,34 @@ async function main() {
           }
         }
 
-        const r = await provisionOne(browser, {
-          inboxProvider: cfg.worker.inboxProvider,
-          inboxToken: cfg.worker.inboxToken,
-          timeout: cfg.worker.timeoutMs,
-          retries: cfg.worker.retriesPerAccount,
-          ...(proxy
-            ? { pickProxy: () => parseProxyLine(proxy), onProxyFail: (srv, kind, errMsg) => markProxyFail(srv, errMsg) }
-            : {}),
-          directContextFactory: cfg.worker.hybridOff
-            ? null
-            : async (storage) => {
-                const ctx = await browser.newContext({
-                  locale: "en-US",
-                  userAgent: DESKTOP_UA,
-                  storageState: storage,
-                  reducedMotion: "reduce",
-                  // TANPA proxy — verify + API key dari IP asli/bawaan mesin.
-                });
-                leanRoutes(ctx);
-                return ctx;
-              },
-          onStep: (s) => OUT.emit("step", s),
-        });
+        const r = await Promise.race([
+          provisionOne(browser, {
+            inboxProvider: cfg.worker.inboxProvider,
+            inboxToken: cfg.worker.inboxToken,
+            timeout: cfg.worker.timeoutMs,
+            retries: cfg.worker.retriesPerAccount,
+            ...(proxy
+              ? { pickProxy: () => parseProxyLine(proxy), onProxyFail: (srv, kind, errMsg) => markProxyFail(srv, errMsg) }
+              : {}),
+            directContextFactory: cfg.worker.hybridOff
+              ? null
+              : async (storage) => {
+                  const ctx = await browser.newContext({
+                    locale: "en-US",
+                    userAgent: DESKTOP_UA,
+                    storageState: storage,
+                    reducedMotion: "reduce",
+                    // TANPA proxy — verify + API key dari IP asli/bawaan mesin.
+                  });
+                  leanRoutes(ctx);
+                  return ctx;
+                },
+            onStep: (s) => OUT.emit("step", s),
+          }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`attempt timeout ${Math.round(attemptTimeoutMs / 60000)}m — worker di-recover`)), attemptTimeoutMs)
+          ),
+        ]);
 
         if (r.ok) {
           done++;
@@ -224,6 +238,7 @@ async function main() {
     OUT.log(`❌ ${e.message}`);
   }
   OUT.emit("worker-done", { worker: wid, done });
+  clearInterval(heartbeat);
   process.exit(0);
 }
 
