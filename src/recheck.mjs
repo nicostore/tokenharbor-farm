@@ -159,6 +159,22 @@ const makePoolPicker = (cfg) => {
   };
 };
 
+/** Fetch /api/me/free-tier dengan retry (sering gagal pas dashboard belum settle). */
+async function fetchFreeTier(page) {
+  for (let i = 0; i < 3; i++) {
+    const q = await page
+      .evaluate(() =>
+        fetch("/api/me/free-tier", { credentials: "include" })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+      )
+      .catch(() => null);
+    if (q) return q;
+    await sleep(2000);
+  }
+  return null;
+}
+
 async function recheckOne(browser, rec, pool) {
   // Proxy dari POOL aja (sama kayak signup): pools/proxies.txt round-robin.
   const poolProxy = pool ? pool.next() : null;
@@ -179,14 +195,8 @@ async function recheckOne(browser, rec, pool) {
       });
       await login(page, rec.email, rec.password);
       await sleep(2500); // dashboard settle
-      // Cek quota free tier dari endpoint internal (fast path — nggak perlu UI).
-      const quota = await page
-        .evaluate(() =>
-          fetch("/api/me/free-tier", { credentials: "include" })
-            .then((r) => (r.ok ? r.json() : null))
-            .catch(() => null)
-        )
-        .catch(() => null);
+      // Cek quota + status free models dari endpoint internal (realtime, bukan nebak DOM).
+      const quota = await fetchFreeTier(page);
       return { quota, page, ctx };
     } catch (e) {
       await ctx.close().catch(() => {});
@@ -212,14 +222,38 @@ async function recheckOne(browser, rec, pool) {
   }
   const { page, ctx, quota } = attempt;
   try {
-    const wasFree = rec.free_models === true;
-    const enabled = await enableFreeModels(page);
-    if (enabled && !wasFree) {
-      rec.free_models = true;
-      return { status: "fixed", rec, quota, viaProxy, viaPool };
+    // Ground truth dari server: quota.activated = free models aktif apa nggak.
+    const activated = quota ? quota.activated === true : null;
+    let status, changed = false;
+
+    if (activated === true) {
+      status = "already";
+      if (rec.free_models !== true) { rec.free_models = true; changed = true; }
+    } else if (activated === false) {
+      // Belum aktif — klik tombol, lalu VERIFIKASI lagi ke server.
+      const enabled = await enableFreeModels(page);
+      if (enabled) {
+        await sleep(1500);
+        const q2 = await fetchFreeTier(page);
+        if (q2 && q2.activated === true) {
+          status = "fixed";
+          rec.free_models = true;
+          changed = true;
+        } else {
+          status = "btn-missing"; // ke-klik tapi server masih bilang belum aktif
+        }
+      } else {
+        status = "btn-missing"; // tombol tak muncul padahal server bilang belum aktif
+      }
+    } else {
+      // quota n/a (fetch gagal total) — fallback cek DOM seperti dulu.
+      const wasFree = rec.free_models === true;
+      const enabled = await enableFreeModels(page);
+      if (enabled && !wasFree) { status = "fixed"; rec.free_models = true; changed = true; }
+      else if (enabled && wasFree) status = "already";
+      else status = wasFree ? "already" : "absent";
     }
-    if (enabled && wasFree) return { status: "already", rec, quota, viaProxy, viaPool };
-    return { status: wasFree ? "already" : "absent", rec, quota, viaProxy, viaPool }; // tombol tak muncul = sudah free
+    return { status, rec, quota, viaProxy, viaPool, changed };
   } finally {
     await ctx.close().catch(() => {});
   }
@@ -248,12 +282,12 @@ async function main() {
       try {
         const r = await recheckOne(browser, rec, pool);
         results.push({ idx, ...r });
-        const icon = r.status === "fixed" ? "✅ FIXED" : r.status === "already" ? "✔ sudah" : "○ absent";
+        const icon = r.status === "fixed" ? "✅ FIXED" : r.status === "already" ? "✔ sudah" : r.status === "btn-missing" ? "❓ btn" : "○ absent";
         const via = r.viaProxy ? "via pool" : "IP bawaan";
         const q = r.quota;
         const qs = q
           ? `quota ${q.req_used ?? "?"} req (${q.used_pct ?? "?"}%), reset ${(q.reset_at || "?").slice(0, 10)}${q.exhausted ? " ⚠ EXHAUSTED" : ""}`
-          : "quota n/a";
+          : "quota n/a (free-tier fetch gagal)";
         log.info(`[${idx + 1}/${accounts.length}] ${rec.email} — ${icon} free models (${via}) · ${qs}`);
       } catch (e) {
         results.push({ idx, status: "error", error: String(e.message || e) });
@@ -264,12 +298,13 @@ async function main() {
   await Promise.all(Array.from({ length: workers }, next));
   await browser.close().catch(() => {});
 
-  // In-place update accounts.jsonl untuk yang ke-fix (rewrite bersih).
-  const fixed = results.filter((r) => r.status === "fixed");
-  if (fixed.length) {
+  // In-place update accounts.jsonl untuk yang BERUBAH (fixed / activated:true tapi
+  // record bilang false) — rewrite bersih.
+  const changed = results.filter((r) => r.changed);
+  if (changed.length) {
     const af = abs(cfg.output.accountsFile);
     const lines = readFileSync(af, "utf8").split(/\r?\n/);
-    for (const r of fixed) {
+    for (const r of changed) {
       const i = r.idx;
       let n = 0;
       for (let li = 0; li < lines.length; li++) {
@@ -287,12 +322,14 @@ async function main() {
       }
     }
     writeFileSync(af, lines.join("\n"), "utf8");
-    log.ok(`accounts.jsonl di-update: ${fixed.length} akun sekarang free_models:true`);
+    log.ok(`accounts.jsonl di-update: ${changed.length} akun`);
   }
 
   const errs = results.filter((r) => r.status === "error");
   const absent = results.filter((r) => r.status === "absent");
   const already = results.filter((r) => r.status === "already");
+  const fixed = results.filter((r) => r.status === "fixed");
+  const btnMissing = results.filter((r) => r.status === "btn-missing");
 
   // keys-recheck.txt: key dari akun yang quota-nya BELUM habis (exhausted=false,
   // used_pct < 100). Snapshot fresh tiap run — file di-overwrite.
@@ -313,7 +350,8 @@ async function main() {
   console.log(`\n=== Ringkasan ===`);
   console.log(`  ✅ Di-fix (baru diaktifkan): ${fixed.length}`);
   console.log(`  ✔ Sudah free models:        ${already.length}`);
-  console.log(`  ○ Tombol absent (free):     ${absent.length}`);
+  console.log(`  ❓ Tombol tak muncul:        ${btnMissing.length}`);
+  console.log(`  ○ Absent (DOM fallback):    ${absent.length}`);
   console.log(`  ❌ Gagal login/cek:          ${errs.length}`);
   if (errs.length) {
     console.log("\nGagal:");
