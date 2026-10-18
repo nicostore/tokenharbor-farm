@@ -173,6 +173,23 @@ async function main() {
   const errs = results.filter((r) => r.status === "error");
   const absent = results.filter((r) => r.status === "absent");
   const already = results.filter((r) => r.status === "already");
+
+  // keys-recheck.txt: key dari akun yang quota-nya BELUM habis (exhausted=false,
+  // used_pct < 100). Snapshot fresh tiap run — file di-overwrite.
+  const healthy = results.filter((r) => r.quota && !r.quota.exhausted && (r.quota.used_pct ?? 100) < 100);
+  if (healthy.length) {
+    const kf = resolve(ROOT, "keys-recheck.txt");
+    const lines = healthy
+      .map((r) => accounts[r.idx]?.api_key || "")
+      .filter(Boolean);
+    if (lines.length) {
+      writeFileSync(kf, [...new Set(lines)].join("\n") + "\n", "utf8");
+      log.ok(`keys-recheck.txt ditulis: ${[...new Set(lines)].length} key dengan quota tersisa`);
+    }
+  } else {
+    log.warn("keys-recheck.txt tidak ditulis — tidak ada akun dengan quota tersisa (semua exhausted / quota n/a)");
+  }
+
   console.log(`\n=== Ringkasan ===`);
   console.log(`  ✅ Di-fix (baru diaktifkan): ${fixed.length}`);
   console.log(`  ✔ Sudah free models:        ${already.length}`);
