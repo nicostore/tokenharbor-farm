@@ -156,9 +156,13 @@ export async function login(page, email, password) {
   await passInput.waitFor({ state: "visible", timeout: 15000 });
   await passInput.fill(password);
 
+  // Submit: button[type=submit] DULUAN — halaman login punya tab "Sign in" dan
+  // tombol submit "Sign in" (getByRole().first() bisa kena tab yang bukan submit).
+  let sub = page.locator('button[type="submit"]:has-text("Sign in")').first();
+  if (!(await sub.count())) sub = page.locator('button[type="submit"]').first();
   await Promise.all([
     page.waitForLoadState("domcontentloaded").catch(() => {}),
-    page.getByRole("button", { name: /sign in|log in|login/i }).first().click({ timeout: 10000 }),
+    sub.click({ timeout: 10000 }),
   ]);
   await sleep(3000);
 

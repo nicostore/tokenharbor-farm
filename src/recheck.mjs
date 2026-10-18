@@ -87,14 +87,22 @@ async function recheckOne(browser, rec) {
     });
     await login(page, rec.email, rec.password);
     await sleep(2500); // dashboard settle
+    // Cek quota free tier dari endpoint internal (fast path — nggak perlu UI).
+    const quota = await page
+      .evaluate(() =>
+        fetch("/api/me/free-tier", { credentials: "include" })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+      )
+      .catch(() => null);
     const wasFree = rec.free_models === true;
     const enabled = await enableFreeModels(page);
     if (enabled && !wasFree) {
       rec.free_models = true;
-      return { status: "fixed", rec };
+      return { status: "fixed", rec, quota };
     }
-    if (enabled && wasFree) return { status: "already", rec };
-    return { status: wasFree ? "already" : "absent", rec }; // tombol tak muncul = sudah free
+    if (enabled && wasFree) return { status: "already", rec, quota };
+    return { status: wasFree ? "already" : "absent", rec, quota }; // tombol tak muncul = sudah free
   } finally {
     await ctx.close().catch(() => {});
   }
@@ -122,7 +130,11 @@ async function main() {
         const r = await recheckOne(browser, rec);
         results.push({ idx, ...r });
         const icon = r.status === "fixed" ? "✅ FIXED" : r.status === "already" ? "✔ sudah" : "○ absent";
-        log.info(`[${idx + 1}/${accounts.length}] ${rec.email} — ${icon} free models`);
+        const q = r.quota;
+        const qs = q
+          ? `quota ${q.req_used ?? "?"} req (${q.used_pct ?? "?"}%), reset ${(q.reset_at || "?").slice(0, 10)}${q.exhausted ? " ⚠ EXHAUSTED" : ""}`
+          : "quota n/a";
+        log.info(`[${idx + 1}/${accounts.length}] ${rec.email} — ${icon} free models · ${qs}`);
       } catch (e) {
         results.push({ idx, status: "error", error: String(e.message || e) });
         log.warn(`[${idx + 1}/${accounts.length}] ${rec.email} — ❌ ${String(e.message || e).slice(0, 140)}`);
