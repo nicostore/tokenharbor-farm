@@ -13,7 +13,7 @@
  * Browser: FRESH per akun (anti-flag), headless, msedge→chrome→chromium,
  * LAUNCH_ARGS hemat CPU sama kayak farm. Login + cek dari IP bawaan (hybrid).
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { log } from "./utils/logger.mjs";
@@ -175,6 +175,23 @@ async function fetchFreeTier(page) {
   return null;
 }
 
+/** Dump kondisi halaman pas btn-missing — buat diagnosa kenapa tombol tak muncul. */
+async function dumpPageState(page, email) {
+  try {
+    const state = await page.evaluate(() => {
+      const btns = [...document.querySelectorAll("button")].map((b) => (b.innerText || "").trim().slice(0, 50)).filter(Boolean).slice(0, 30);
+      const links = [...document.querySelectorAll("a")].map((a) => (a.innerText || "").trim().slice(0, 50)).filter(Boolean).slice(0, 30);
+      const body = (document.body.innerText || "").replace(/\s+/g, " ").slice(0, 1500);
+      return { url: location.href, title: document.title, btns, links, body };
+    });
+    const safe = String(email).replace(/[^a-z0-9._-]/gi, "_");
+    const dir = resolve(ROOT, "logs", "recheck-diag");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, `${safe}.json`), JSON.stringify(state, null, 2), "utf8");
+    log.warn(`btn-missing: dump halaman → logs/recheck-diag/${safe}.json`);
+  } catch { /* diagnosa best-effort */ }
+}
+
 async function recheckOne(browser, rec, pool) {
   // Proxy dari POOL aja (sama kayak signup): pools/proxies.txt round-robin.
   const poolProxy = pool ? pool.next() : null;
@@ -241,9 +258,11 @@ async function recheckOne(browser, rec, pool) {
           changed = true;
         } else {
           status = "btn-missing"; // ke-klik tapi server masih bilang belum aktif
+          await dumpPageState(page, rec.email);
         }
       } else {
         status = "btn-missing"; // tombol tak muncul padahal server bilang belum aktif
+        await dumpPageState(page, rec.email);
       }
     } else {
       // quota n/a (fetch gagal total) — fallback cek DOM seperti dulu.
