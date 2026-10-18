@@ -72,37 +72,92 @@ function loadAccounts(cfg, limit) {
   return limit > 0 ? out.slice(0, limit) : out;
 }
 
+/** Parse rec.proxy -> Playwright proxy object (atau null kalau kosong/invalid). */
+function toProxy(proxyStr) {
+  if (!proxyStr) return null;
+  let s = String(proxyStr).trim();
+  if (!s) return null;
+  let username = "";
+  let password = "";
+  let server = s;
+  // http://host:port:user:pass atau http://user:pass@host:port
+  if (/^https?:\/\//i.test(s)) {
+    const m = s.match(/^https?:\/\/(?:([^:@\/]+):([^@\/]+)@)?([^\/]+)/i);
+    if (m) {
+      username = m[1] || "";
+      password = m[2] || "";
+      server = s.replace(/^https?:\/\//i, "http://").replace(/(?:([^:@\/]+):([^@\/]+)@)/, "");
+      if (m[1] && m[2]) server = `http://${m[3]}`;
+    }
+  } else {
+    // host:port:user:pass atau host:port
+    const parts = s.split(":");
+    if (parts.length === 4) {
+      server = `http://${parts[0]}:${parts[1]}`;
+      username = parts[2];
+      password = parts[3];
+    } else if (parts.length === 2) {
+      server = `http://${parts[0]}:${parts[1]}`;
+    } else {
+      return null; // format nggak dikenal
+    }
+  }
+  return { server, username: username || undefined, password: password || undefined };
+}
+
 async function recheckOne(browser, rec) {
-  const ctx = await browser.newContext({
+  const proxyCfg = rec.proxy ? toProxy(rec.proxy) : null;
+  const baseOpts = {
     viewport: { width: 800, height: 600 },
     reducedMotion: "reduce",
     userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-  });
-  const page = await ctx.newPage();
+  };
+  const tryWith = async (proxy) => {
+    const ctx = await browser.newContext({ ...baseOpts, ...(proxy ? { proxy } : {}) });
+    const page = await ctx.newPage();
+    try {
+      await page.route("**/*", (r) => {
+        const t = r.request().resourceType();
+        if (t === "image" || t === "font" || t === "media") return r.abort();
+        return r.continue();
+      });
+      await login(page, rec.email, rec.password);
+      await sleep(2500); // dashboard settle
+      // Cek quota free tier dari endpoint internal (fast path — nggak perlu UI).
+      const quota = await page
+        .evaluate(() =>
+          fetch("/api/me/free-tier", { credentials: "include" })
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null)
+        )
+        .catch(() => null);
+      return { quota, page, ctx };
+    } catch (e) {
+      await ctx.close().catch(() => {});
+      throw e;
+    }
+  };
+
+  // 1) coba via proxy record; 2) kalau gagal (timeout/auth), fallback IP bawaan.
+  let attempt = null;
+  let viaProxy = false;
   try {
-    await page.route("**/*", (r) => {
-      const t = r.request().resourceType();
-      if (t === "image" || t === "font" || t === "media") return r.abort();
-      return r.continue();
-    });
-    await login(page, rec.email, rec.password);
-    await sleep(2500); // dashboard settle
-    // Cek quota free tier dari endpoint internal (fast path — nggak perlu UI).
-    const quota = await page
-      .evaluate(() =>
-        fetch("/api/me/free-tier", { credentials: "include" })
-          .then((r) => (r.ok ? r.json() : null))
-          .catch(() => null)
-      )
-      .catch(() => null);
+    attempt = await tryWith(proxyCfg);
+    viaProxy = true;
+  } catch (proxyErr) {
+    log.warn(`${rec.email}: proxy gagal (${String(proxyErr.message || proxyErr).slice(0, 80)}) — fallback IP bawaan`);
+    attempt = await tryWith(null);
+  }
+  const { page, ctx, quota } = attempt;
+  try {
     const wasFree = rec.free_models === true;
     const enabled = await enableFreeModels(page);
     if (enabled && !wasFree) {
       rec.free_models = true;
-      return { status: "fixed", rec, quota };
+      return { status: "fixed", rec, quota, viaProxy };
     }
-    if (enabled && wasFree) return { status: "already", rec, quota };
-    return { status: wasFree ? "already" : "absent", rec, quota }; // tombol tak muncul = sudah free
+    if (enabled && wasFree) return { status: "already", rec, quota, viaProxy };
+    return { status: wasFree ? "already" : "absent", rec, quota, viaProxy }; // tombol tak muncul = sudah free
   } finally {
     await ctx.close().catch(() => {});
   }
@@ -130,11 +185,12 @@ async function main() {
         const r = await recheckOne(browser, rec);
         results.push({ idx, ...r });
         const icon = r.status === "fixed" ? "✅ FIXED" : r.status === "already" ? "✔ sudah" : "○ absent";
+        const via = r.viaProxy ? "via proxy" : "IP bawaan";
         const q = r.quota;
         const qs = q
           ? `quota ${q.req_used ?? "?"} req (${q.used_pct ?? "?"}%), reset ${(q.reset_at || "?").slice(0, 10)}${q.exhausted ? " ⚠ EXHAUSTED" : ""}`
           : "quota n/a";
-        log.info(`[${idx + 1}/${accounts.length}] ${rec.email} — ${icon} free models · ${qs}`);
+        log.info(`[${idx + 1}/${accounts.length}] ${rec.email} — ${icon} free models (${via}) · ${qs}`);
       } catch (e) {
         results.push({ idx, status: "error", error: String(e.message || e) });
         log.warn(`[${idx + 1}/${accounts.length}] ${rec.email} — ❌ ${String(e.message || e).slice(0, 140)}`);
