@@ -133,6 +133,52 @@ export async function signup(page, email, password, opts = {}) {
 }
 
 /**
+ * Login ke akun yang SUDAH ADA (recheck mode): goto /login, isi email+password,
+ * submit, tunggu redirect ke /dashboard. Dipakai oleh `src/recheck.mjs`.
+ *
+ * @param {import('playwright').Page} page
+ * @param {string} email
+ * @param {string} password
+ */
+export async function login(page, email, password) {
+  await page.goto(`${SITE}/login`, { waitUntil: "domcontentloaded", timeout: 60000 });
+  await page
+    .getByRole("button", { name: /essential only|accept analytics/i })
+    .first()
+    .click({ timeout: 4000 })
+    .catch(() => {});
+
+  const emailInput = page.locator('input[type="email"], input[placeholder*="example" i]').first();
+  await emailInput.waitFor({ state: "visible", timeout: 30000 });
+  await emailInput.fill(email);
+
+  const passInput = page.locator('input[type="password"]').first();
+  await passInput.waitFor({ state: "visible", timeout: 15000 });
+  await passInput.fill(password);
+
+  await Promise.all([
+    page.waitForLoadState("domcontentloaded").catch(() => {}),
+    page.getByRole("button", { name: /sign in|log in|login/i }).first().click({ timeout: 10000 }),
+  ]);
+  await sleep(3000);
+
+  const text = await textOf(page);
+  if (/doing that a bit fast|take a breath/i.test(text)) {
+    throw new Error("rate-limit: login throttled by Token Harbor");
+  }
+  if (/invalid|wrong|incorrect|not found/i.test(text) && /password|credential|email/i.test(text)) {
+    throw new Error(`login rejected: ${text.match(/[^\n]*(?:invalid|wrong|incorrect)[^\n]*/i)?.[0]?.slice(0, 120) || "bad credentials"}`);
+  }
+  if (!/\/dashboard/.test(page.url())) {
+    await page.waitForURL(/\/dashboard/, { timeout: 30000 }).catch(() => {});
+  }
+  if (!/\/dashboard/.test(page.url())) {
+    throw new Error(`login did not reach the dashboard: ${text.slice(0, 160)}`);
+  }
+  log.ok("login OK, di dashboard");
+}
+
+/**
  * Step 2b: enable free models on the dashboard if the button is shown.
  * Turbo reference: after signup, click "Enable free models" so the account
  * gets its free model access instead of staying in the limited state.
