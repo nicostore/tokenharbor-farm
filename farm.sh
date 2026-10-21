@@ -12,10 +12,11 @@ fi
 
 # playwright browser (chromium) belum ada?
 if [ ! -d "$HOME/.cache/ms-playwright" ] || [ -z "$(ls -A "$HOME/.cache/ms-playwright" 2>/dev/null)" ]; then
-  echo "Playwright browser belum ke-install — install dulu sekali:"
-  echo "  npm install && npx playwright install chromium"
-  echo "Atau install manual (lihat skill mass-registration-bots, rev match package.json)."
-  exit 1
+  echo "Playwright browser belum ke-install — install manual (stable, gak hang)..."
+  bash install-browser.sh || {
+    echo "Install browser gagal. Coba manual: bash install-browser.sh"
+    exit 1
+  }
 fi
 
 exec node src/tui.mjs "$@"

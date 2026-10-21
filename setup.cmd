@@ -32,8 +32,8 @@ if exist "%EDGE_PATH%" (
   if exist "C:\Program Files\Microsoft\Edge\Application\msedge.exe" (
     echo  Edge ditemukan - tidak perlu download Chromium. Selesai!
   ) else (
-    echo  Edge TIDAK ditemukan. Download Chromium dulu (sekali, 140MB, lama)...
-    call npx playwright install chromium
+    echo  Edge TIDAK ditemukan. Install Chromium manual (stable, gak stuck)...
+    call install-browser.cmd
   )
 )
 

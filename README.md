@@ -6,10 +6,12 @@ Full interactive UI, jalan di **Windows (RDP)** maupun Linux (**VPS/Ubuntu**).
 ## Run
 
 ```bash
-# Linux/VPS
-./farm.sh              # atau: bash farm.sh
+# Linux/VPS — setup + browser + jalan (browser di-install manual, gak hang)
+bash install-browser.sh      # sekali: Chromium manual (opsional — farm.sh auto-install)
+./farm.sh                    # auto: install-browser.sh kalau browser belum ada
 
-# Windows
+# Windows — setup + browser + jalan (Edge kalau ada, skip Chromium 140MB)
+setup.cmd                    # sekali: npm install; kalau gak ada Edge → panggil install-browser.cmd
 farm.cmd
 ```
 
