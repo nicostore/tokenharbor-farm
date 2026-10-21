@@ -138,6 +138,7 @@ function onKey(chunk) {
     // menu
     if (ch === "q" || ch === "Q") process.exit(0);
     if (ch === "s" || ch === "S") { if (farm) farm.stop(); }
+    if (ch === "i" || ch === "I") { cfg.router.autoImport = !cfg.router.autoImport; saveConfig(); render(); continue; }
     if (ch === "\r" || ch === "\n") { flushMenu(); continue; }
     if (ch >= "0" && ch <= "9") { menuBuf += ch; render(); }
   }
@@ -282,6 +283,7 @@ function renderMenu() {
   s += ` 3. Jumlah worker   ${cfg.worker.count}\n`;
   s += ` 4. Inbox provider  ${cfg.worker.inboxProvider}\n`;
   s += ` 5. Hybrid (verify+mint IP bawaan)  ${cfg.worker.hybridOff ? C.red + "OFF" : C.green + "ON"}${C.reset}\n`;
+  s += ` I. Auto-import ke 9router         ${cfg.router.autoImport ? C.green + "ON" : C.red + "OFF"}${C.reset}\n`;
   s += ` 6. Output keys     ${trunc(cfg.output.keysFile, Math.max(termWidth() - 20, 20))}\n`;
   s += ` 7. Output accounts ${trunc(cfg.output.accountsFile, Math.max(termWidth() - 20, 20))}\n`;
   s += ` 8. Target rotate-ip ${cfg.rotateip.target === 0 ? "∞ (sampai stop)" : cfg.rotateip.target + " key"}\n`;

@@ -22,9 +22,10 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadConfig, abs, ensureDirs } from "../config.mjs";
+import { loadConfig, abs, ensureDirs, findRouterDb } from "../config.mjs";
 import { emit, onEvent } from "../events.mjs";
 import { logFarm } from "../utils/logs.mjs";
+import { importKeysToRouter } from "../import-9router.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)), "..");
 const NODE = process.execPath;
@@ -190,6 +191,21 @@ export class Farm {
       };
       appendFileSync(af, JSON.stringify(rec) + "\n", "utf8");
       logFarm(`💾 saved key ${key.slice(0, 24)}… + account`);
+
+      // Auto-import ke 9router (opsional): cuma kalau toggle ON + DB 9router ada.
+      if (this.cfg.router?.autoImport) {
+        try {
+          const dbPath = this.cfg.router.dbPath || findRouterDb();
+          if (dbPath) {
+            const { imported } = importKeysToRouter([key], dbPath);
+            if (imported) logFarm(`➡️ key ke-import ke 9router (tokenharbor)`);
+          } else {
+            logFarm(`⚠️ auto-import ON tapi DB 9router tidak ditemukan — skip`);
+          }
+        } catch (e) {
+          logFarm(`⚠️ auto-import gagal: ${e.message}`);
+        }
+      }
     } catch (e) {
       logFarm(`⚠️ gagal tulis output: ${e.message}`);
     }

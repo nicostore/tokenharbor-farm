@@ -35,6 +35,10 @@ export const DEFAULTS = {
     logsDir: "logs",
     clearLogsOnStart: true,  // auto-clear full logs tiap run
   },
+  router: {
+    autoImport: false,       // ON = tiap key mint langsung di-import ke 9router (wajib 9router lokal)
+    dbPath: "",              // kosong = auto-detect (/root/.9router/db/data.sqlite, %USERPROFILE%\.9router\...)
+  },
   rotateip: {
     target: 0,               // 0 = sampai stop manual; N = sampai N key
   },
@@ -66,6 +70,18 @@ export function saveConfig(cfg = cached) {
 
 export function getConfig() {
   return loadConfig();
+}
+
+/** Cari path DB 9router secara cross-platform (Windows + Linux). */
+export function findRouterDb() {
+  const cfg = loadConfig();
+  if (cfg.router?.dbPath) return cfg.router.dbPath;
+  const candidates = [
+    "/root/.9router/db/data.sqlite",
+    resolve(process.env.USERPROFILE || process.env.HOME || "~", ".9router", "db", "data.sqlite"),
+    resolve(process.env.USERPROFILE || "", ".9router", "data.sqlite"),
+  ];
+  return candidates.find((p) => existsSync(p)) || "";
 }
 
 export function resetConfig() {
