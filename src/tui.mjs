@@ -12,6 +12,7 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, saveConfig } from "./config.mjs";
@@ -166,6 +167,7 @@ function handleMenu(n) {
     case 6: enterPrompt("keysFile", cfg.output.keysFile); break;
     case 7: enterPrompt("accountsFile", cfg.output.accountsFile); break;
     case 8: enterPrompt("target", String(cfg.rotateip.target)); break;
+    case 0: stockProxy(); break;
     case 9: startFarm(); break;
     default: break;
   }
@@ -284,6 +286,7 @@ function renderMenu() {
   s += ` 7. Output accounts ${trunc(cfg.output.accountsFile, Math.max(termWidth() - 20, 20))}\n`;
   s += ` 8. Target rotate-ip ${cfg.rotateip.target === 0 ? "∞ (sampai stop)" : cfg.rotateip.target + " key"}\n`;
   s += `\n${C.bold}─ Aksi ─${C.reset} ${sep().slice(0, Math.max(termWidth() - 10, 10))}\n`;
+  s += ` 0. ${C.cyan}Auto-stock proxy${C.reset}  (fetch + check alive + isi pool)\n`;
   s += ` ${C.green}9. ▶ START farm${C.reset}\n`;
   s += ` S. Stop farm   Q. Keluar\n`;
   if (events.length) {
@@ -413,6 +416,32 @@ function renderDashboard() {
 }
 
 // ---------- farm ----------
+// Auto-stock: jalankan src/stock.mjs sebagai child, tampilkan output live,
+// balik ke menu setelah selesai. Dipanggil dari menu (0) dan otomatis saat
+// START kalau pool masih kecil.
+function stockProxy(minAlive = 50) {
+  if (farmBusy) return;
+  mode = "dashboard"; // reuse buffer; renderManualStock nampilin log child
+  hideCursor();
+  const child = spawn(process.execPath, [resolve(ROOT, "src/stock.mjs"), String(minAlive), cfg.proxy.file], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let buf = "";
+  const paint = () => {
+    clearScreen();
+    let s = banner() + "\n\n" + C.cyan + "  Auto-stock proxy…" + C.reset + "\n\n";
+    s += buf.split("\n").slice(-20).map((l) => "  " + l).join("\n");
+    s += "\n\n" + C.gray + "(selesai otomatis kembali ke menu)" + C.reset;
+    process.stdout.write(s + "\n");
+  };
+  child.stdout.on("data", (d) => { buf += d.toString(); paint(); });
+  child.stderr.on("data", (d) => { buf += d.toString(); paint(); });
+  child.on("exit", () => {
+    paint();
+    setTimeout(() => { mode = "menu"; render(); }, 1500);
+  });
+}
+
 async function startFarm() {
   if (farmBusy) return;
   farmBusy = true;
@@ -420,6 +449,20 @@ async function startFarm() {
   mode = "dashboard";
   events.length = 0;
   clearLogsOnStart();
+
+  // Auto-stock saat START kalau pool nyaris kosong (< 5) — jangan start
+  // dengan pool mati. Kalau user pilih pool kosong, isi dulu.
+  if (cfg.proxy.enabled && poolCount() < 5) {
+    logFarm("pool kecil — auto-stock dulu…");
+    await new Promise((resolveStock) => {
+      const child = spawn(process.execPath, [resolve(ROOT, "src/stock.mjs"), "30", cfg.proxy.file], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      child.stdout.on("data", (d) => logFarm(d.toString().trim()));
+      child.stderr.on("data", (d) => logFarm(d.toString().trim()));
+      child.on("exit", resolveStock);
+    });
+  }
 
   farm = new Farm(cfg);
   const unsub = onEvent((ev) => {
