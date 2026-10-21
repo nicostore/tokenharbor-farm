@@ -4,13 +4,18 @@ rem  tokenharbor-farm - install Chromium MANUAL (paling stable)
 rem  Ganti `npx playwright install chromium` yang suka stuck.
 rem  Pakai curl.exe + PowerShell bawaan Windows.
 rem  Kalau Chromium sudah pernah terpasang, langsung skip.
+rem
+rem  URL pakai cdn.playwright.dev (dbazure) — SAMA dengan versi
+rem  Linux. playwright.azureedge.net redirect ke
+rem  playwright.download.prss.microsoft.com yang DNS-nya sering
+rem  gagal di jaringan rumahan/VPS Indonesia.
 rem ============================================================
 cd /d "%~dp0"
 setlocal EnableExtensions
 
 set "REV=1134"
 set "V=129.0.6668.29"
-set "URL=https://playwright.azureedge.net/builds/chromium/%REV%/chromium-win64.zip"
+set "URL=https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/%REV%/chromium-win64.zip"
 set "MPDIR=%LOCALAPPDATA%\ms-playwright"
 set "ZIP=%MPDIR%\chromium-%REV%-manual.zip"
 set "DEST=%MPDIR%\chromium-%REV%"
