@@ -1,7 +1,39 @@
 # TokenHarbor Farm
 
 Farm CLI untuk bikin akun + API key TokenHarbor (tokenharbor.ai) secara massal.
-Full interactive UI, jalan di **Windows (RDP)** maupun Linux.
+Full interactive UI, jalan di **Windows (RDP)** maupun Linux (**VPS/Ubuntu**).
+
+## Run
+
+```bash
+# Linux/VPS
+./farm.sh              # atau: bash farm.sh
+
+# Windows
+farm.cmd
+```
+
+## Auto-stock proxy (langsung jalan, nggak perlu list manual)
+
+```bash
+node src/stock.mjs            # fetch 4 sumber free list + check CONNECT ke target + isi pool
+node src/stock.mjs 100        # sampai minimal 100 proxy alive
+```
+Di UI: menu `0. Auto-stock proxy`, atau START farm otomatis stock kalau pool < 5.
+
+## Recheck + quota
+
+```bash
+node src/recheck.mjs          # login ulang semua akun accounts.jsonl: aktifkan free models
+                              # kalau tombol muncul, cek quota (/api/me/free-tier), tulis keys-recheck.txt
+node src/recheck.mjs 20 3     # 20 akun, 3 paralel
+```
+
+## Import ke 9router (otomatis, VPS)
+
+```bash
+node src/import-9router.mjs   # baca keys.txt + insert connection per key ke node TokenHarbor
+```
 
 ## Fitur
 
