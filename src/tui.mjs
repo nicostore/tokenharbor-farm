@@ -285,7 +285,6 @@ function renderMenu() {
   s += ` 4. Inbox provider  ${cfg.worker.inboxProvider}\n`;
   s += ` I. Auto-import ke 9router         ${cfg.router.autoImport ? C.green + "ON" : C.red + "OFF"}${C.reset}\n`;
   s += ` R. Auto-restock proxy             ${cfg.proxy.autoStock ? C.green + "ON" : C.red + "OFF"}${C.reset}\n`;
-  s += ` I. Auto-import ke 9router         ${cfg.router.autoImport ? C.green + "ON" : C.red + "OFF"}${C.reset}\n`;
   s += ` 6. Output keys     ${trunc(cfg.output.keysFile, Math.max(termWidth() - 20, 20))}\n`;
   s += ` 7. Output accounts ${trunc(cfg.output.accountsFile, Math.max(termWidth() - 20, 20))}\n`;
   s += ` 8. Target rotate-ip ${cfg.rotateip.target === 0 ? "∞ (sampai stop)" : cfg.rotateip.target + " key"}\n`;
