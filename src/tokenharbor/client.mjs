@@ -186,12 +186,31 @@ export async function login(page, email, password) {
  * Step 2b: enable free models on the dashboard if the button is shown.
  * Turbo reference: after signup, click "Enable free models" so the account
  * gets its free model access instead of staying in the limited state.
- * Returns true ONLY when the click landed AND the button state changed
- * (button gone or disabled) — a swallowed click error must not report success.
+ * Returns true ONLY when the SERVER confirms activation (fetch /api/me/free-tier
+ * -> activated === true) — a DOM click alone is NOT proof ("free models are
+ * turn off for your account" happens when the button click lands but the
+ * server never activates the allowance).
  *
  * @param {import('playwright').Page} page
  */
 export async function enableFreeModels(page) {
+  // Ground truth helper: server bilang free models aktif?
+  const serverActive = () =>
+    page
+      .evaluate(() =>
+        fetch("/api/me/free-tier", { credentials: "include", signal: AbortSignal.timeout(15000) })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+      )
+      .then((q) => q?.activated === true)
+      .catch(() => false);
+
+  // 0. Sudah aktif dari server? Nggak usah klik apa-apa.
+  if (await serverActive()) {
+    log.ok("free models sudah enabled (server: activated=true)");
+    return true;
+  }
+
   // Cuma tombol aksi "Enable free models" — JANGAN match "free models" doang
   // (card plan/badge lain ikut ke-klik dan dianggap sukses).
   const candidates = [
@@ -202,21 +221,26 @@ export async function enableFreeModels(page) {
   for (const btn of candidates) {
     try {
       if (!(await btn.count().catch(() => 0))) continue;
-      // Tombol sudah disabled = free models memang sudah ON — lapor sukses.
+      // Tombol sudah disabled = free models memang sudah ON — konfirmasi server.
       if (await btn.isDisabled().catch(() => false)) {
-        log.ok("free models sudah enabled (tombol disabled)");
-        return true;
+        if (await serverActive()) {
+          log.ok("free models sudah enabled (tombol disabled + server)");
+          return true;
+        }
+        log.warn("tombol disabled tapi server bilang belum aktif — coba klik");
       }
       await btn.click({ timeout: 5000 }); // jangan .catch — kegagalan = return false
       await sleep(1200);
-      // Verifikasi state berubah: tombol hilang ATAU jadi disabled.
-      const after = await btn.count().catch(() => 0);
-      const nowDisabled = after ? await btn.isDisabled().catch(() => false) : false;
-      if (!after || nowDisabled) {
-        log.ok("free models enabled ✅ (terverifikasi)");
-        return true;
+      // Verifikasi SERVER (ground truth), bukan cuma state tombol.
+      // Kadang perlu beberapa detik buat allowance beneran ke-activate.
+      for (let v = 0; v < 3; v++) {
+        if (await serverActive()) {
+          log.ok("free models enabled ✅ (server activated=true)");
+          return true;
+        }
+        await sleep(1500);
       }
-      log.warn("free models: klik sukses tapi state tombol belum berubah — tidak dianggap enabled");
+      log.warn("free models: tombol ke-klik tapi server masih activated=false — tidak dianggap enabled");
       return false;
     } catch (e) {
       log.warn(`free models: klik gagal — ${String(e.message || e).slice(0, 120)}`);
@@ -224,7 +248,9 @@ export async function enableFreeModels(page) {
     }
   }
   // nggak ada tombol — akun memang sudah free / tombol nggak muncul.
-  return false;
+  // Konfirmasi ke server: kalau sempat activated=false tapi gak ada tombol,
+  // ada kemungkinan akun emang free default (server true) — cek sekali lagi.
+  return serverActive();
 }
 
 /**
