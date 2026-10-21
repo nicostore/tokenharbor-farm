@@ -139,6 +139,7 @@ function onKey(chunk) {
     if (ch === "q" || ch === "Q") process.exit(0);
     if (ch === "s" || ch === "S") { if (farm) farm.stop(); }
     if (ch === "i" || ch === "I") { cfg.router.autoImport = !cfg.router.autoImport; saveConfig(); render(); continue; }
+    if (ch === "r" || ch === "R") { cfg.proxy.autoStock = !cfg.proxy.autoStock; saveConfig(); render(); continue; }
     if (ch === "\r" || ch === "\n") { flushMenu(); continue; }
     if (ch >= "0" && ch <= "9") { menuBuf += ch; render(); }
   }
@@ -282,7 +283,8 @@ function renderMenu() {
   s += ` 2. File proxy      ${trunc(cfg.proxy.file, Math.max(termWidth() - 20, 20))}\n`;
   s += ` 3. Jumlah worker   ${cfg.worker.count}\n`;
   s += ` 4. Inbox provider  ${cfg.worker.inboxProvider}\n`;
-  s += ` 5. Hybrid (verify+mint IP bawaan)  ${cfg.worker.hybridOff ? C.red + "OFF" : C.green + "ON"}${C.reset}\n`;
+  s += ` I. Auto-import ke 9router         ${cfg.router.autoImport ? C.green + "ON" : C.red + "OFF"}${C.reset}\n`;
+  s += ` R. Auto-restock proxy             ${cfg.proxy.autoStock ? C.green + "ON" : C.red + "OFF"}${C.reset}\n`;
   s += ` I. Auto-import ke 9router         ${cfg.router.autoImport ? C.green + "ON" : C.red + "OFF"}${C.reset}\n`;
   s += ` 6. Output keys     ${trunc(cfg.output.keysFile, Math.max(termWidth() - 20, 20))}\n`;
   s += ` 7. Output accounts ${trunc(cfg.output.accountsFile, Math.max(termWidth() - 20, 20))}\n`;
@@ -452,9 +454,9 @@ async function startFarm() {
   events.length = 0;
   clearLogsOnStart();
 
-  // Auto-stock saat START kalau pool nyaris kosong (< 5) — jangan start
-  // dengan pool mati. Kalau user pilih pool kosong, isi dulu.
-  if (cfg.proxy.enabled && poolCount() < 5) {
+    // Auto-stock saat START kalau toggle ON dan pool nyaris kosong (< 5) —
+  // jangan start dengan pool mati. Toggle R di menu buat ON/OFF.
+  if (cfg.proxy.enabled && cfg.proxy.autoStock !== false && poolCount() < 5) {
     logFarm("pool kecil — auto-stock dulu…");
     await new Promise((resolveStock) => {
       const child = spawn(process.execPath, [resolve(ROOT, "src/stock.mjs"), "30", cfg.proxy.file], {

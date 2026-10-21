@@ -20,6 +20,7 @@ export const DEFAULTS = {
     cooldownRateMin: 30,
     cooldownRateRepeatMin: 60,
     maxFailsBeforeBan: 3,
+    autoStock: true,        // ON = isi ulang pool otomatis kalau menipis (fetch free list + check CONNECT)
   },
   worker: {
     count: 3,
