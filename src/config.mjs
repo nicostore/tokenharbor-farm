@@ -39,6 +39,8 @@ export const DEFAULTS = {
   router: {
     autoImport: false,       // ON = tiap key mint langsung di-import ke 9router (wajib 9router lokal)
     dbPath: "",              // kosong = auto-detect (/root/.9router/db/data.sqlite, %USERPROFILE%\.9router\...)
+    providerId: "",          // kosong = auto (node custom 'TK' > bawaan 'tokenharbor')
+    applyProxy: true,        // ON = bind tiap key ke 1 proxy pool (round-robin) saat import
   },
   rotateip: {
     target: 0,               // 0 = sampai stop manual; N = sampai N key

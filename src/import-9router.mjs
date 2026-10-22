@@ -23,51 +23,80 @@ import { loadConfig, abs, findRouterDb } from "./config.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DRY = process.env.ROUTER_DRY === "1";
-const PROVIDER = "tokenharbor"; // built-in 9router provider id (Api Key Providers)
 
-function loadKeys(file) {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith("thk_live_"));
+/**
+ * Tentukan provider id target: node CUSTOM user (prefix/name 'TK') > bawaan 'tokenharbor'.
+ * Override lewat config router.providerId atau env TH_PROVIDER.
+ * @returns {{id: string, label: string, custom: boolean}}
+ */
+export function resolveProvider(db, cfg = loadConfig()) {
+  const explicit = process.env.TH_PROVIDER || cfg.router?.providerId;
+  if (explicit) return { id: explicit, label: explicit, custom: true };
+  const nodes = db.prepare("SELECT id, name, data FROM providerNodes").all();
+  for (const n of nodes) {
+    let d = {};
+    try { d = JSON.parse(n.data || "{}"); } catch { /* */ }
+    const nm = String(n.name || "").trim().toUpperCase();
+    const pfx = String(d.prefix || "").trim().toUpperCase();
+    if (nm === "TK" || pfx === "TK") return { id: n.id, label: `custom node ${n.name} (TK)`, custom: true };
+  }
+  return { id: "tokenharbor", label: "bawaan tokenharbor", custom: false };
 }
 
-/** Import daftar key ke 9router (provider tokenharbor). Return {imported, skipped}. */
-export function importKeysToRouter(keys, dbPath) {
+/** Proxy pool aktif, urut stabil (round-robin deterministik). */
+function activePools(db) {
+  try {
+    return db.prepare("SELECT id FROM proxyPools WHERE isActive=1 ORDER BY rowid").all().map((r) => r.id);
+  } catch { return []; }
+}
+
+/**
+ * Import daftar key ke 9router (provider custom TK / bawaan tokenharbor).
+ * Kalau applyProxy: tiap key di-bind round-robin ke proxyPools aktif
+ * (connectionProxyEnabled=true + proxyPoolId) → 1 key 1 egress IP.
+ * Return {imported, skipped, provider, proxied}.
+ */
+export function importKeysToRouter(keys, dbPath, opts = {}) {
   const allocated = [...new Set(keys.filter((k) => k && k.startsWith("thk_live_")))];
-  if (!allocated.length) return { imported: 0, skipped: 0 };
+  if (!allocated.length) return { imported: 0, skipped: 0, provider: null, proxied: 0 };
   if (!dbPath || !existsSync(dbPath)) throw new Error(`DB 9router tidak ada: ${dbPath}`);
+
+  const cfg = loadConfig();
+  const wantProxy = opts.applyProxy ?? (process.env.ROUTER_NO_PROXY === "1" ? false : cfg.router?.applyProxy !== false);
 
   const db = new DatabaseSync(dbPath);
   try {
+    const provider = resolveProvider(db, cfg);
     const existing = new Set(
-      db.prepare("SELECT data FROM providerConnections WHERE provider = ?").all(PROVIDER)
+      db.prepare("SELECT data FROM providerConnections WHERE provider = ?").all(provider.id)
         .map((r) => { try { return JSON.parse(r.data).apiKey; } catch { return null; } })
         .filter(Boolean)
     );
     const fresh = allocated.filter((k) => !existing.has(k));
-    if (!fresh.length) return { imported: 0, skipped: allocated.length };
+    if (!fresh.length) return { imported: 0, skipped: allocated.length, provider, proxied: 0 };
 
+    const pools = wantProxy ? activePools(db) : [];
     const nowIso = new Date().toISOString();
     const insert = db.prepare(
       `INSERT INTO providerConnections (id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt)
        VALUES (?, ?, 'apikey', ?, NULL, 1, 1, ?, ?, ?)`
     );
+    let rr = existing.size; // offset biar round-robin nyambung
     db.exec("BEGIN");
-    let n = 0;
+    let n = 0, proxied = 0;
     for (const key of fresh) {
-      const data = JSON.stringify({
-        apiKey: key,
-        testStatus: "untested",
-        providerSpecificData: {
-          connectionProxyEnabled: false,
-          connectionProxyUrl: "",
-          connectionNoProxy: "",
-        },
-      });
-      insert.run(randomUUID(), PROVIDER, `th-${String(n + 1).padStart(3, "0")}`, data, nowIso, nowIso);
+      const psd = { connectionProxyEnabled: false, connectionProxyUrl: "", connectionNoProxy: "" };
+      if (pools.length) {
+        psd.connectionProxyEnabled = true;
+        psd.proxyPoolId = pools[rr % pools.length];
+        proxied++; rr++;
+      }
+      const data = JSON.stringify({ apiKey: key, testStatus: "untested", providerSpecificData: psd });
+      insert.run(randomUUID(), provider.id, `th-${String(n + 1).padStart(3, "0")}`, data, nowIso, nowIso);
       n++;
     }
     db.exec("COMMIT");
-    return { imported: n, skipped: allocated.length - n };
+    return { imported: n, skipped: allocated.length - n, provider, proxied };
   } finally {
     db.close();
   }
@@ -83,13 +112,20 @@ async function main() {
   if (!DB) { console.error("DB 9router tidak ditemukan (set ROUTER_DB atau isi config router.dbPath)"); process.exit(1); }
 
   console.log(`DB: ${DB}`);
-  console.log(`Provider: ${PROVIDER} (built-in 9router)`);
   console.log(`Key di file: ${keys.length}`);
+
+  const db0 = new DatabaseSync(DB);
+  const provider = resolveProvider(db0, cfg);
+  const nPools = activePools(db0).length;
+  db0.close();
+  const wantProxy = process.env.ROUTER_NO_PROXY === "1" ? false : cfg.router?.applyProxy !== false;
+  console.log(`Provider: ${provider.label} — ${provider.id}`);
+  console.log(`Proxy: ${wantProxy ? `${nPools} pool aktif (round-robin per key)` : "OFF"}`);
 
   if (DRY) {
     const db = new DatabaseSync(DB);
     const existing = new Set(
-      db.prepare("SELECT data FROM providerConnections WHERE provider = ?").all(PROVIDER)
+      db.prepare("SELECT data FROM providerConnections WHERE provider = ?").all(provider.id)
         .map((r) => { try { return JSON.parse(r.data).apiKey; } catch { return null; } })
         .filter(Boolean)
     );
@@ -105,9 +141,14 @@ async function main() {
   copyFileSync(DB, backupPath);
   console.log(`Backup: ${backupPath}`);
 
-  const { imported, skipped } = importKeysToRouter(keys, DB);
-  console.log(`✅ Import ${imported} key baru ke 9router (provider tokenharbor, ${skipped} sudah ada). Tidak perlu restart — kebaca live.`);
+  const { imported, skipped, proxied } = importKeysToRouter(keys, DB);
+  console.log(`✅ Import ${imported} key ke ${provider.label} (${skipped} sudah ada) · proxy: ${proxied}/${imported}. Live — nggak perlu restart.`);
   console.log(`Cek: GET /v1/models`);
+}
+
+function loadKeys(file) {
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith("thk_live_"));
 }
 
 // Hanya jalan sebagai CLI (node src/import-9router.mjs) — TIDAK saat di-import

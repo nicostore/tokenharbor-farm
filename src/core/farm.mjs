@@ -197,8 +197,8 @@ export class Farm {
         try {
           const dbPath = this.cfg.router.dbPath || findRouterDb();
           if (dbPath) {
-            const { imported } = importKeysToRouter([key], dbPath);
-            if (imported) logFarm(`➡️ key ke-import ke 9router (tokenharbor)`);
+            const { imported, proxied } = importKeysToRouter([key], dbPath);
+            if (imported) logFarm(`➡️ key ke-import ke 9router${proxied ? " + proxy" : ""}`);
           } else {
             logFarm(`⚠️ auto-import ON tapi DB 9router tidak ditemukan — skip`);
           }
