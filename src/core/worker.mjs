@@ -182,6 +182,8 @@ async function main() {
           provisionOne(browser, {
             inboxProvider: cfg.worker.inboxProvider,
             inboxToken: cfg.worker.inboxToken,
+            mailBaseUrl: cfg.worker.mailBaseUrl,
+            mailboxDomain: cfg.worker.mailboxDomain,
             timeout: cfg.worker.timeoutMs,
             retries: cfg.worker.retriesPerAccount,
             ...(proxy
