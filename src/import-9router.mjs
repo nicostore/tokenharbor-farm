@@ -31,16 +31,37 @@ const DRY = process.env.ROUTER_DRY === "1";
  */
 export function resolveProvider(db, cfg = loadConfig()) {
   const explicit = process.env.TH_PROVIDER || cfg.router?.providerId;
-  if (explicit) return { id: explicit, label: explicit, custom: true };
   const nodes = db.prepare("SELECT id, name, data FROM providerNodes").all();
+  const build = (n) => {
+    let d = {};
+    try { d = JSON.parse(n.data || "{}"); } catch { /* */ }
+    return {
+      id: n.id,
+      label: `custom node ${n.name} (${d.prefix || "?"})`,
+      custom: true,
+      // custom node WAJIB bawa baseUrl/prefix/nodeName/apiType di psd tiap connection —
+      // tanpa itu routing per-connection + tombol test dashboard gagal (401/404).
+      psd: {
+        prefix: d.prefix || "",
+        apiType: d.apiType || "chat",
+        baseUrl: d.baseUrl || "",
+        nodeName: n.name || "",
+      },
+    };
+  };
+  if (explicit) {
+    const hit = nodes.find((n) => n.id === explicit);
+    if (hit) return build(hit);
+    return { id: explicit, label: explicit, custom: true, psd: {} };
+  }
   for (const n of nodes) {
     let d = {};
     try { d = JSON.parse(n.data || "{}"); } catch { /* */ }
     const nm = String(n.name || "").trim().toUpperCase();
     const pfx = String(d.prefix || "").trim().toUpperCase();
-    if (nm === "TK" || pfx === "TK") return { id: n.id, label: `custom node ${n.name} (TK)`, custom: true };
+    if (nm === "TK" || pfx === "TK") return build(n);
   }
-  return { id: "tokenharbor", label: "bawaan tokenharbor", custom: false };
+  return { id: "tokenharbor", label: "bawaan tokenharbor", custom: false, psd: {} };
 }
 
 /** Proxy pool aktif, urut stabil (round-robin deterministik). */
@@ -82,17 +103,23 @@ export function importKeysToRouter(keys, dbPath, opts = {}) {
        VALUES (?, ?, 'apikey', ?, NULL, 1, 1, ?, ?, ?)`
     );
     let rr = existing.size; // offset biar round-robin nyambung
+    const seq = existing.size; // nomor key lanjut biar nama unik
     db.exec("BEGIN");
     let n = 0, proxied = 0;
     for (const key of fresh) {
-      const psd = { connectionProxyEnabled: false, connectionProxyUrl: "", connectionNoProxy: "" };
+      const psd = {
+        ...(provider.psd || {}),
+        connectionProxyEnabled: false,
+        connectionProxyUrl: "",
+        connectionNoProxy: "",
+      };
       if (pools.length) {
         psd.connectionProxyEnabled = true;
         psd.proxyPoolId = pools[rr % pools.length];
         proxied++; rr++;
       }
       const data = JSON.stringify({ apiKey: key, testStatus: "untested", providerSpecificData: psd });
-      insert.run(randomUUID(), provider.id, `th-${String(n + 1).padStart(3, "0")}`, data, nowIso, nowIso);
+      insert.run(randomUUID(), provider.id, `th-${String(seq + n + 1).padStart(3, "0")}`, data, nowIso, nowIso);
       n++;
     }
     db.exec("COMMIT");
