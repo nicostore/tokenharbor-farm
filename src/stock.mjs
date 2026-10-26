@@ -21,6 +21,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
+import tls from "node:tls";
 import { loadConfig, abs } from "./config.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -79,9 +80,12 @@ async function fetchStatic(url) {
   } catch { return []; }
 }
 
-/** CONNECT ke target via proxy; true kalau balas 200. Hard timer eksternal
- *  (socket.setTimeout TIDAK fire untuk socket stuck connecting — SYN di-drop
- *  firewall = tanpa error, tanpa timeout). */
+/** Verifikasi penuh: CONNECT 200 → TLS handshake (cert WAJIB valid, biar
+ *  proxy MITM/self-signed kebuang) → GET / → status HTTP kebaca.
+ *  CONNECT-only nggak cukup: banyak proxy gratisan balas 200 tapi diam-diam
+ *  intercept TLS / nolak handshake → browser error ERR_CERT_AUTHORITY_INVALID
+ *  atau ERR_TUNNEL_CONNECTION_FAILED. Hard timer eksternal (socket.setTimeout
+ *  TIDAK fire untuk socket stuck connecting). */
 function checkProxy(proxy) {
   return new Promise((resolveOne) => {
     const [h, p] = proxy.split(":");
@@ -91,20 +95,38 @@ function checkProxy(proxy) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      sock.destroy();
+      try { sock.destroy(); } catch {}
       resolveOne(ok);
     };
     const timer = setTimeout(() => done(false), CONNECT_TIMEOUT);
-    sock.setTimeout(Math.floor(CONNECT_TIMEOUT / 2), () => done(false));
+    sock.setTimeout(CONNECT_TIMEOUT, () => done(false));
     sock.on("error", () => done(false));
     sock.on("connect", () => {
       sock.write(`CONNECT ${TARGET_HOST}:${TARGET_PORT} HTTP/1.1\r\nHost: ${TARGET_HOST}:${TARGET_PORT}\r\n\r\n`);
     });
-    sock.on("data", (d) => {
-      const s = d.toString();
-      if (/^HTTP\/1\.[01] 200/i.test(s)) done(true);
-      else if (/^HTTP\/1\.[01] \d/.test(s)) done(false);
-    });
+    let head = "";
+    const onHead = (d) => {
+      head += d.toString("latin1");
+      if (!head.includes("\r\n\r\n")) return;
+      sock.removeListener("data", onHead);
+      if (!/^HTTP\/1\.[01] 200/i.test(head)) return done(false);
+      const t = tls.connect({ socket: sock, servername: TARGET_HOST, rejectUnauthorized: true }, () => {
+        t.write(`GET / HTTP/1.1\r\nHost: ${TARGET_HOST}\r\nUser-Agent: Mozilla/5.0\r\nAccept: */*\r\nConnection: close\r\n\r\n`);
+      });
+      let resp = "";
+      t.on("data", (b) => {
+        resp += b.toString("latin1");
+        const m = resp.match(/^HTTP\/1\.[01] (\d{3})/);
+        if (m) {
+          const st = Number(m[1]);
+          done(st >= 100 && st < 600);
+          try { t.destroy(); } catch {}
+        }
+      });
+      t.on("error", () => done(false));
+      t.setTimeout(CONNECT_TIMEOUT, () => done(false));
+    };
+    sock.on("data", onHead);
   });
 }
 
