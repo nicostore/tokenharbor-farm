@@ -7,7 +7,8 @@ Cara baca usage: panggil 1x model ':free' dengan max_tokens=1 → respon bawa he
   x-th-plan           (free/paid)
 
 Klasifikasi (pesan upstream, bukan cuma kode):
-  EXHAUSTED  : 429 + "used this period's free allowance" / pct >= 100  -> HAPUS
+  EXHAUSTED  : 429 + "used this period's free allowance" / pct >= PRUNE_PCT_CUTOFF (default 100; mis. 95)
+             -> HAPUS
   DISABLED   : 403 free_models_disabled / balance_zero                -> HAPUS
   TRANSIENT  : 429 "under heavy load" / "Per-minute rate limit"        -> retry, lalu simpan
   OK         : 200
@@ -21,6 +22,7 @@ import sqlite3, json, sys, time, os, collections, urllib.request, urllib.error
 DB = "/root/.9router/db/data.sqlite"
 MODEL = "deepseek-v4-flash:free"
 APPLY = "--apply" in sys.argv
+PCT_CUTOFF = float(os.environ.get("PRUNE_PCT_CUTOFF", "100"))   # hapus yang terpakai >= ini (mis. 95)
 SLEEP = float(os.environ.get("PRUNE_SLEEP", "1.3"))
 RETRY_WAIT = float(os.environ.get("PRUNE_RETRY_WAIT", "18"))
 ONLY = os.environ.get("PRUNE_ONLY", "").upper()      # mis. TRANSIENT → cuma re-check yang itu
@@ -122,7 +124,7 @@ def classify(code, hdr, err):
     except Exception:
         pctv = None
     if code == 200:
-        if pctv is not None and pctv >= 100:
+        if pctv is not None and pctv >= PCT_CUTOFF:
             return "EXHAUSTED"
         return "OK"
     if code == 403 and ("free_models_disabled" in e or "balance_zero" in e):
